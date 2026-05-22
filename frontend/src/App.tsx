@@ -106,6 +106,22 @@ function buildJournalDraft(stock: StockCard): JournalEntryDraft {
     thesis: `${stock.ticker} remains on the dashboard because of its current urgency and sentiment profile.`,
     review: "",
     outcome: "",
+    entryPrice: "",
+    stopLoss: "",
+    targetPrice: "",
+  };
+}
+
+function buildJournalFromTradePlan(draft: TradePlanDraft): JournalEntryDraft {
+  return {
+    ticker: draft.ticker,
+    stage: "monitoring",
+    thesis: draft.thesis,
+    review: "",
+    outcome: "",
+    entryPrice: draft.entryPrice,
+    stopLoss: draft.stopLoss,
+    targetPrice: draft.targetPrice,
   };
 }
 
@@ -1075,6 +1091,12 @@ function App() {
               </button>
               <button
                 className="ghost-button"
+                onClick={() => setJournalDraft(buildJournalFromTradePlan(tradePlanDraft))}
+              >
+                Open Journal Review
+              </button>
+              <button
+                className="ghost-button"
                 onClick={() => void createBothAlertsFromDraft(tradePlanDraft)}
                 disabled={savingAlertRule}
               >
@@ -1230,6 +1252,39 @@ function App() {
                   onChange={(event) =>
                     setJournalDraft((current) =>
                       current ? { ...current, thesis: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Entry Price
+                <input
+                  value={journalDraft.entryPrice}
+                  onChange={(event) =>
+                    setJournalDraft((current) =>
+                      current ? { ...current, entryPrice: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Stop Loss
+                <input
+                  value={journalDraft.stopLoss}
+                  onChange={(event) =>
+                    setJournalDraft((current) =>
+                      current ? { ...current, stopLoss: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Target Price
+                <input
+                  value={journalDraft.targetPrice}
+                  onChange={(event) =>
+                    setJournalDraft((current) =>
+                      current ? { ...current, targetPrice: event.target.value } : current,
                     )
                   }
                 />

@@ -102,6 +102,9 @@ class JournalEntryPayload(BaseModel):
     thesis: str
     review: str
     outcome: str
+    entryPrice: str = ""
+    stopLoss: str = ""
+    targetPrice: str = ""
 
 
 class SaveJournalEntryRequest(BaseModel):

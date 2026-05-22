@@ -102,6 +102,9 @@ export interface JournalEntryDraft {
   thesis: string;
   review: string;
   outcome: string;
+  entryPrice: string;
+  stopLoss: string;
+  targetPrice: string;
 }
 
 export interface StoredJournalEntry {

@@ -78,6 +78,21 @@ class StoredAlertRule(BaseModel):
     payload: AlertRulePayload
 
 
+class TriggeredAlertPayload(BaseModel):
+    ticker: str
+    condition: str
+    threshold: str
+    channel: str
+    triggered_value: str
+    message: str
+
+
+class StoredTriggeredAlert(BaseModel):
+    ticker: str
+    triggered_at: str
+    payload: TriggeredAlertPayload
+
+
 class IndexQuote(BaseModel):
     ticker: str
     label: str

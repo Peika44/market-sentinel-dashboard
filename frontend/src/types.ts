@@ -78,3 +78,18 @@ export interface StoredAlertRule {
   updated_at: string;
   payload: AlertRuleDraft;
 }
+
+export interface TriggeredAlertPayload {
+  ticker: string;
+  condition: string;
+  threshold: string;
+  channel: string;
+  triggered_value: string;
+  message: string;
+}
+
+export interface StoredTriggeredAlert {
+  ticker: string;
+  triggered_at: string;
+  payload: TriggeredAlertPayload;
+}

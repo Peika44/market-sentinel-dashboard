@@ -8,6 +8,7 @@ from aiokafka import AIOKafkaConsumer
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.alerts import AlertEngine
 from app.config import settings
 from app.models import (
     AlertRulePayload,
@@ -15,6 +16,7 @@ from app.models import (
     SaveAlertRuleRequest,
     SaveTradePlanDraftRequest,
     StoredAlertRule,
+    StoredTriggeredAlert,
     StoredTradePlanDraft,
     WatchlistMutation,
 )
@@ -44,6 +46,7 @@ async def consume_market_events(app: FastAPI) -> None:
             async for message in consumer:
                 event = MarketEvent.model_validate(message.value)
                 app.state.dashboard_state.apply_event(event)
+                app.state.alert_engine.evaluate_market_event(event)
                 await app.state.websocket_hub.broadcast(event)
         except asyncio.CancelledError:
             raise
@@ -61,6 +64,7 @@ async def lifespan(app: FastAPI):
     app.state.store = SQLiteStore(settings.sqlite_db_path)
     app.state.cache = RedisCache(settings.redis_url)
     app.state.dashboard_state = DashboardState(app.state.store, app.state.cache)
+    app.state.alert_engine = AlertEngine(app.state.store, app.state.cache)
     app.state.websocket_hub = WebSocketHub()
     consumer_task = asyncio.create_task(consume_market_events(app))
 
@@ -87,8 +91,16 @@ app.add_middleware(
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "backend"}
+async def health() -> dict[str, object]:
+    cache_ok = app.state.cache.ping()
+    websocket_clients = len(app.state.websocket_hub._connections)
+    return {
+        "status": "ok",
+        "service": "backend",
+        "provider": settings.market_data_provider,
+        "cache": "ok" if cache_ok else "degraded",
+        "websocket_clients": websocket_clients,
+    }
 
 
 @app.get("/api/dashboard/{user_id}")
@@ -159,6 +171,19 @@ async def save_alert_rule(payload: SaveAlertRuleRequest):
         updated_at,
     )
     return {"ok": True, "updated_at": updated_at}
+
+
+@app.get("/api/triggered-alerts/{user_id}", response_model=list[StoredTriggeredAlert])
+async def list_triggered_alerts(user_id: str, limit: int = 20):
+    rows = app.state.alert_engine.list_triggered_alerts(user_id, limit=limit)
+    return [
+        StoredTriggeredAlert(
+            ticker=row["ticker"],
+            triggered_at=row["triggered_at"],
+            payload=row["payload"],
+        )
+        for row in rows
+    ]
 
 
 @app.get("/api/stocks/{ticker}/history")

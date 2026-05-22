@@ -9,6 +9,7 @@ import type {
   StoredAlertRule,
   StockCard,
   StoredTradePlanDraft,
+  StoredTriggeredAlert,
   TradePlanDraft,
 } from "./types";
 import { StockChartModal } from "./components/StockChartModal";
@@ -130,6 +131,7 @@ function App() {
   const [alertRuleDraft, setAlertRuleDraft] = useState<AlertRuleDraft | null>(null);
   const [savedAlertRules, setSavedAlertRules] = useState<StoredAlertRule[]>([]);
   const [savingAlertRule, setSavingAlertRule] = useState(false);
+  const [triggeredAlerts, setTriggeredAlerts] = useState<StoredTriggeredAlert[]>([]);
   const marketStatus = useMarketStatus();
 
   async function loadDashboard() {
@@ -174,11 +176,27 @@ function App() {
     setSavedAlertRules(payload);
   }
 
+  async function loadTriggeredAlerts() {
+    const response = await fetch(`/api/triggered-alerts/${DEMO_USER_ID}?limit=10`);
+    if (!response.ok) {
+      throw new Error("Failed to load triggered alerts.");
+    }
+
+    const payload = (await response.json()) as StoredTriggeredAlert[];
+    setTriggeredAlerts(payload);
+  }
+
   async function refresh() {
     setError(null);
     setLoading(true);
     try {
-      await Promise.all([loadDashboard(), loadOverview(), loadDrafts(), loadAlertRules()]);
+      await Promise.all([
+        loadDashboard(),
+        loadOverview(),
+        loadDrafts(),
+        loadAlertRules(),
+        loadTriggeredAlerts(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard refresh failed.");
     } finally {
@@ -627,6 +645,26 @@ function App() {
                           {rule.payload.condition} · {rule.payload.threshold} · {new Date(rule.updated_at).toLocaleString()}
                         </span>
                       </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="saved-drafts-panel">
+                <p className="eyebrow">Recent Triggered Alerts</p>
+                {triggeredAlerts.length === 0 ? (
+                  <p className="draft-empty-state">No alerts have triggered yet.</p>
+                ) : (
+                  <div className="saved-drafts-list">
+                    {triggeredAlerts.slice(0, 5).map((alert) => (
+                      <div
+                        key={`${alert.ticker}-${alert.triggered_at}-${alert.payload.condition}`}
+                        className="saved-draft-item"
+                      >
+                        <strong>{alert.ticker}</strong>
+                        <span>{alert.payload.message}</span>
+                        <span>{new Date(alert.triggered_at).toLocaleString()}</span>
+                      </div>
                     ))}
                   </div>
                 )}

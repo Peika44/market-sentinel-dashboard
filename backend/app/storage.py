@@ -51,6 +51,17 @@ class SQLiteStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS triggered_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    triggered_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def load_watchlist(self, user_id: str) -> list[str]:
@@ -144,3 +155,39 @@ class SQLiteStore:
                     }
                 )
             return rules
+
+    def save_triggered_alert(
+        self, user_id: str, ticker: str, payload: dict, triggered_at: str
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO triggered_alerts (user_id, ticker, payload_json, triggered_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, ticker.upper(), json.dumps(payload), triggered_at),
+            )
+            conn.commit()
+
+    def list_triggered_alerts(self, user_id: str, limit: int = 20) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, payload_json, triggered_at
+                FROM triggered_alerts
+                WHERE user_id = ?
+                ORDER BY triggered_at DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+            alerts: list[dict] = []
+            for row in rows:
+                alerts.append(
+                    {
+                        "ticker": row["ticker"],
+                        "triggered_at": row["triggered_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+            return alerts

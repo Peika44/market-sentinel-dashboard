@@ -54,6 +54,12 @@ class AlertEngine:
                     message = (
                         f"{event.ticker} price change dropped to {event.change_pct:.2f}%."
                     )
+            elif payload.condition == "volume_above":
+                if float(event.volume) >= threshold:
+                    triggered_value = float(event.volume)
+                    message = (
+                        f"{event.ticker} volume reached {event.volume:,}, above threshold {int(threshold):,}."
+                    )
 
             if triggered_value is None:
                 continue

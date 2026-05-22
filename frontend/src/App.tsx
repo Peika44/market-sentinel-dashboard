@@ -866,6 +866,7 @@ function App() {
                   <option value="urgency_above">Urgency Above</option>
                   <option value="price_change_above">Price Change Above %</option>
                   <option value="price_change_below">Price Change Below %</option>
+                  <option value="volume_above">Volume Above</option>
                 </select>
               </label>
               <label>

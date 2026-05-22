@@ -91,6 +91,10 @@ class DashboardState:
         self.latest_quotes[ticker] = normalized
         self.price_history[ticker].append(normalized.current_price)
 
+    def recent_history_before_event(self, ticker: str, limit: int = 24) -> list[float]:
+        history = list(self.price_history[ticker.upper()])
+        return history[-limit:] if history else []
+
     def add_to_watchlist(self, user_id: str, ticker: str) -> None:
         user_watchlist = self.watchlists.setdefault(user_id, set(DEFAULT_WATCHLIST))
         user_watchlist.add(ticker.upper())

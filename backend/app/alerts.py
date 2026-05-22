@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from app.cache import RedisCache
 from app.models import AlertRulePayload, MarketEvent
 from app.notifier import Notifier
+from app.state import DashboardState
 from app.storage import SQLiteStore
 
 logger = logging.getLogger("market_sentinel_alerts")
@@ -14,14 +15,22 @@ DEFAULT_USER_ID = "demo-user"
 
 
 class AlertEngine:
-    def __init__(self, store: SQLiteStore, cache: RedisCache, notifier: Notifier) -> None:
+    def __init__(
+        self,
+        store: SQLiteStore,
+        cache: RedisCache,
+        notifier: Notifier,
+        state: DashboardState,
+    ) -> None:
         self._store = store
         self._cache = cache
         self._notifier = notifier
+        self._state = state
 
     def evaluate_market_event(self, event: MarketEvent) -> list[dict]:
         rules = self._store.list_alert_rules(DEFAULT_USER_ID)
         triggered: list[dict] = []
+        previous_history = self._state.recent_history_before_event(event.ticker, limit=24)
 
         for row in rules:
             payload = AlertRulePayload.model_validate(row["payload"])
@@ -72,6 +81,24 @@ class AlertEngine:
                     message = (
                         f"{event.ticker} dropped below stop level {threshold:.2f} with last price {event.current_price:.2f}."
                     )
+            elif payload.condition == "breakout_above_recent_high":
+                if previous_history:
+                    recent_high = max(previous_history)
+                    breakout_threshold = recent_high + threshold
+                    if event.current_price > breakout_threshold:
+                        triggered_value = event.current_price
+                        message = (
+                            f"{event.ticker} broke above recent high {recent_high:.2f} with last price {event.current_price:.2f}."
+                        )
+            elif payload.condition == "breakdown_below_recent_low":
+                if previous_history:
+                    recent_low = min(previous_history)
+                    breakdown_threshold = recent_low - threshold
+                    if event.current_price < breakdown_threshold:
+                        triggered_value = event.current_price
+                        message = (
+                            f"{event.ticker} broke below recent low {recent_low:.2f} with last price {event.current_price:.2f}."
+                        )
 
             if triggered_value is None:
                 continue

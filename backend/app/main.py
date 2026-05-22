@@ -46,8 +46,8 @@ async def consume_market_events(app: FastAPI) -> None:
 
             async for message in consumer:
                 event = MarketEvent.model_validate(message.value)
-                app.state.dashboard_state.apply_event(event)
                 app.state.alert_engine.evaluate_market_event(event)
+                app.state.dashboard_state.apply_event(event)
                 await app.state.websocket_hub.broadcast(event)
         except asyncio.CancelledError:
             raise
@@ -66,7 +66,12 @@ async def lifespan(app: FastAPI):
     app.state.cache = RedisCache(settings.redis_url)
     app.state.dashboard_state = DashboardState(app.state.store, app.state.cache)
     app.state.notifier = Notifier()
-    app.state.alert_engine = AlertEngine(app.state.store, app.state.cache, app.state.notifier)
+    app.state.alert_engine = AlertEngine(
+        app.state.store,
+        app.state.cache,
+        app.state.notifier,
+        app.state.dashboard_state,
+    )
     app.state.websocket_hub = WebSocketHub()
     consumer_task = asyncio.create_task(consume_market_events(app))
 

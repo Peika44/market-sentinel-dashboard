@@ -104,6 +104,16 @@ code {
   color: #ffb0b0;
 }
 
+.status-pill.market-open {
+  background: rgba(72, 214, 145, 0.12);
+  color: #9cffc6;
+}
+
+.status-pill.market-closed {
+  background: rgba(255, 255, 255, 0.08);
+  color: #d7e0ec;
+}
+
 .status-pill.neutral {
   background: rgba(255, 255, 255, 0.06);
   color: #dbe7f7;
@@ -217,11 +227,56 @@ code {
   gap: 6px;
 }
 
+.overview-card.interactive {
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.overview-card.interactive:hover,
+.overview-card.interactive.selected {
+  transform: translateY(-2px);
+  border-color: rgba(247, 186, 89, 0.45);
+  background: rgba(13, 23, 38, 0.88);
+}
+
 .overview-label {
   color: #f7ba59;
   font-size: 0.85rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.legend-row {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: #aeb8c7;
+  font-size: 0.9rem;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+}
+
+.legend-swatch.low {
+  background: rgba(72, 214, 145, 0.8);
+}
+
+.legend-swatch.medium {
+  background: rgba(247, 186, 89, 0.8);
+}
+
+.legend-swatch.high {
+  background: rgba(255, 113, 113, 0.8);
 }
 
 .content-grid {
@@ -265,6 +320,12 @@ code {
 .detail-name {
   margin: 4px 0 0;
   color: #9aa6b6;
+}
+
+.detail-meta {
+  margin: 6px 0 0;
+  color: #c4cfdb;
+  font-size: 0.95rem;
 }
 
 .ticker {

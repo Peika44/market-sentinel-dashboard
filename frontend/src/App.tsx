@@ -7,6 +7,7 @@ import type {
   MarketOverviewResponse,
   StockCard,
 } from "./types";
+import { useMarketStatus } from "./hooks/useMarketStatus";
 
 const DEMO_USER_ID = "demo-user";
 const OVERVIEW_TICKERS = new Set(["SPY", "QQQ", "IWM"]);
@@ -27,6 +28,20 @@ function computeUrgency(changePct: number, sentimentScore: number): number {
 
 function sortByUrgency(stocks: StockCard[]): StockCard[] {
   return [...stocks].sort((left, right) => right.urgency_score - left.urgency_score);
+}
+
+function buildOverviewPreview(quote: IndexQuote): StockCard {
+  return {
+    ticker: quote.ticker,
+    display_name: quote.label,
+    current_price: quote.current_price,
+    change_pct: quote.change_pct,
+    volume: 0,
+    sentiment_score: 0.5,
+    sentiment_label: "Neutral",
+    urgency_score: computeUrgency(Math.abs(quote.change_pct), 0.5),
+    history: [quote.current_price],
+  };
 }
 
 function Sparkline({ points }: { points: number[] }) {
@@ -56,11 +71,12 @@ function Sparkline({ points }: { points: number[] }) {
 function App() {
   const [stocks, setStocks] = useState<StockCard[]>([]);
   const [indices, setIndices] = useState<IndexQuote[]>([]);
-  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [tickerInput, setTickerInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const marketStatus = useMarketStatus();
 
   async function loadDashboard() {
     const response = await fetch(`/api/dashboard/${DEMO_USER_ID}`);
@@ -71,7 +87,7 @@ function App() {
     const payload = (await response.json()) as DashboardSnapshot;
     const nextStocks = sortByUrgency(payload.stocks);
     setStocks(nextStocks);
-    setSelectedTicker((current) => current ?? nextStocks[0]?.ticker ?? null);
+    setSelectedSymbol((current) => current ?? nextStocks[0]?.ticker ?? null);
   }
 
   async function loadOverview() {
@@ -131,7 +147,7 @@ function App() {
     }
 
     await loadDashboard();
-    setSelectedTicker((current) => {
+    setSelectedSymbol((current) => {
       if (current !== ticker) {
         return current;
       }
@@ -196,7 +212,12 @@ function App() {
     return () => socket.close();
   }, []);
 
-  const selected = stocks.find((stock) => stock.ticker === selectedTicker) ?? stocks[0] ?? null;
+  const overviewSelections = indices.map(buildOverviewPreview);
+  const selected =
+    [...stocks, ...overviewSelections].find((stock) => stock.ticker === selectedSymbol) ??
+    stocks[0] ??
+    overviewSelections[0] ??
+    null;
 
   return (
     <div className="app-shell">
@@ -209,6 +230,12 @@ function App() {
           </p>
         </div>
         <div className="status-cluster">
+          <span
+            className={`status-pill ${marketStatus.isOpen ? "market-open" : "market-closed"}`}
+          >
+            <span className="status-dot" />
+            Market {marketStatus.label}
+          </span>
           <span className={`status-pill ${connected ? "online" : "offline"}`}>
             <span className="status-dot" />
             {connected ? "WebSocket live" : "Reconnecting"}
@@ -251,7 +278,11 @@ function App() {
 
       <section className="overview-grid">
         {indices.map((quote) => (
-          <article key={quote.ticker} className="overview-card">
+          <article
+            key={quote.ticker}
+            className={`overview-card interactive ${selectedSymbol === quote.ticker ? "selected" : ""}`}
+            onClick={() => setSelectedSymbol(quote.ticker)}
+          >
             <span className="overview-label">{quote.ticker}</span>
             <strong>{formatCurrency(quote.current_price)}</strong>
             <span className={quote.change_pct >= 0 ? "change-up" : "change-down"}>
@@ -263,13 +294,28 @@ function App() {
         ))}
       </section>
 
+      <section className="legend-row">
+        <span className="legend-item">
+          <span className="legend-swatch low" />
+          Low urgency
+        </span>
+        <span className="legend-item">
+          <span className="legend-swatch medium" />
+          Medium urgency
+        </span>
+        <span className="legend-item">
+          <span className="legend-swatch high" />
+          High urgency
+        </span>
+      </section>
+
       <section className="content-grid">
         <div className="card-grid">
           {stocks.map((stock) => (
             <article
               key={stock.ticker}
               className={`stock-card ${selected?.ticker === stock.ticker ? "selected" : ""}`}
-              onClick={() => setSelectedTicker(stock.ticker)}
+              onClick={() => setSelectedSymbol(stock.ticker)}
             >
               <div className="card-header">
                 <div>
@@ -313,6 +359,11 @@ function App() {
               <p className="eyebrow">Selected Position</p>
               <h2>{selected.ticker}</h2>
               <p className="detail-name">{selected.display_name}</p>
+              <p className="detail-meta">
+                {selected.volume > 0
+                  ? `${selected.volume.toLocaleString("en-US")} shares in latest update`
+                  : "Market overview selection"}
+              </p>
 
               <div className="detail-metrics">
                 <div>
@@ -358,4 +409,3 @@ function App() {
 }
 
 export default App;
-

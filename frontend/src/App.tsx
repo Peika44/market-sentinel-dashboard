@@ -152,6 +152,22 @@ function formatAlertCondition(condition: string): string {
   return condition.replace(/_/g, " ").replace(/\b\w/g, (char: string) => char.toUpperCase());
 }
 
+function groupAlertsByTicker(rules: StoredAlertRule[]): Array<{
+  ticker: string;
+  rules: StoredAlertRule[];
+}> {
+  const groups = new Map<string, StoredAlertRule[]>();
+  for (const rule of rules) {
+    const existing = groups.get(rule.ticker) ?? [];
+    existing.push(rule);
+    groups.set(rule.ticker, existing);
+  }
+  return Array.from(groups.entries()).map(([ticker, groupedRules]) => ({
+    ticker,
+    rules: groupedRules,
+  }));
+}
+
 function Sparkline({ points }: { points: number[] }) {
   if (points.length < 2) {
     return <div className="chart-empty">Waiting for more ticks...</div>;
@@ -193,6 +209,7 @@ function App() {
   const [savingAlertRule, setSavingAlertRule] = useState(false);
   const [triggeredAlerts, setTriggeredAlerts] = useState<StoredTriggeredAlert[]>([]);
   const marketStatus = useMarketStatus();
+  const groupedAlerts = groupAlertsByTicker(savedAlertRules);
 
   async function loadDashboard() {
     const response = await fetch(`/api/dashboard/${DEMO_USER_ID}`);
@@ -708,44 +725,53 @@ function App() {
 
               <div className="saved-drafts-panel">
                 <p className="eyebrow">Saved Alerts</p>
-                {savedAlertRules.length === 0 ? (
+                {groupedAlerts.length === 0 ? (
                   <p className="draft-empty-state">No saved alert rules yet.</p>
                 ) : (
                   <div className="saved-drafts-list">
-                    {savedAlertRules.slice(0, 4).map((rule) => (
+                    {groupedAlerts.slice(0, 4).map((group) => (
                       <div
-                        key={rule.rule_id}
+                        key={group.ticker}
                         className="saved-draft-item"
                       >
                         <div className="triggered-alert-header">
-                          <strong>{rule.ticker}</strong>
-                          <span className="triggered-alert-badge">
-                            {rule.payload.enabled ? "Enabled" : "Disabled"}
-                          </span>
+                          <strong>{group.ticker}</strong>
+                          <span className="triggered-alert-badge">{group.rules.length} rules</span>
                         </div>
-                        <span>
-                          {rule.payload.condition} · {rule.payload.threshold} · {new Date(rule.updated_at).toLocaleString()}
-                        </span>
-                        <div className="inline-action-row">
-                          <button
-                            className="ghost-button"
-                            onClick={() =>
-                              setAlertRuleDraft({
-                                ...rule.payload,
-                                ruleId: rule.rule_id,
-                              })
-                            }
-                          >
-                            Edit
-                          </button>
-                          <button
-                            className="ghost-button"
-                            onClick={() =>
-                              void toggleAlertRuleEnabled(rule.rule_id, !rule.payload.enabled)
-                            }
-                          >
-                            {rule.payload.enabled ? "Disable" : "Enable"}
-                          </button>
+                        <div className="grouped-alert-list">
+                          {group.rules.map((rule) => (
+                            <div key={rule.rule_id} className="grouped-alert-row">
+                              <div>
+                                <span>
+                                  {formatAlertCondition(rule.payload.condition)} · {rule.payload.threshold}
+                                </span>
+                                <span className="triggered-alert-time">
+                                  {new Date(rule.updated_at).toLocaleString()}
+                                </span>
+                              </div>
+                              <div className="inline-action-row">
+                                <button
+                                  className="ghost-button"
+                                  onClick={() =>
+                                    setAlertRuleDraft({
+                                      ...rule.payload,
+                                      ruleId: rule.rule_id,
+                                    })
+                                  }
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="ghost-button"
+                                  onClick={() =>
+                                    void toggleAlertRuleEnabled(rule.rule_id, !rule.payload.enabled)
+                                  }
+                                >
+                                  {rule.payload.enabled ? "Disable" : "Enable"}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     ))}

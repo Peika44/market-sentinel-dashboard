@@ -42,3 +42,10 @@ class IndexQuote(BaseModel):
     current_price: float
     change_pct: float
 
+
+class CandlePoint(BaseModel):
+    label: str
+    open: float
+    high: float
+    low: float
+    close: float

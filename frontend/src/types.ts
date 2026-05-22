@@ -27,6 +27,16 @@ export interface MarketOverviewResponse {
   indices: IndexQuote[];
 }
 
+export type HistoryRange = "5m" | "1h" | "1D" | "5D" | "1M" | "3M" | "6M" | "1Y";
+
+export interface CandlePoint {
+  label: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 export interface MarketEvent {
   type: string;
   ticker: string;
@@ -36,4 +46,3 @@ export interface MarketEvent {
   volume: number;
   as_of: string;
 }
-

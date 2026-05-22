@@ -7,6 +7,7 @@ import type {
   MarketOverviewResponse,
   StockCard,
 } from "./types";
+import { StockChartModal } from "./components/StockChartModal";
 import { useMarketStatus } from "./hooks/useMarketStatus";
 
 const DEMO_USER_ID = "demo-user";
@@ -76,6 +77,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [showChart, setShowChart] = useState(false);
   const marketStatus = useMarketStatus();
 
   async function loadDashboard() {
@@ -349,6 +351,19 @@ function App() {
               <div className="mini-chart">
                 <Sparkline points={stock.history} />
               </div>
+
+              <div className="card-actions">
+                <button
+                  className="ghost-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedSymbol(stock.ticker);
+                    setShowChart(true);
+                  }}
+                >
+                  Open Chart
+                </button>
+              </div>
             </article>
           ))}
         </div>
@@ -391,6 +406,12 @@ function App() {
                 <Sparkline points={selected.history} />
               </div>
 
+              <div className="detail-actions">
+                <button className="refresh-button" onClick={() => setShowChart(true)}>
+                  View Range Chart
+                </button>
+              </div>
+
               <p className="detail-copy">
                 Urgency blends price movement with sentiment confidence so the UI can surface
                 names that need attention without polling every chart view individually.
@@ -404,6 +425,13 @@ function App() {
           )}
         </aside>
       </section>
+
+      {showChart && selected ? (
+        <StockChartModal
+          stock={selected}
+          onClose={() => setShowChart(false)}
+        />
+      ) : null}
     </div>
   );
 }

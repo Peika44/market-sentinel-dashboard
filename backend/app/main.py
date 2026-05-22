@@ -100,6 +100,15 @@ async def remove_from_watchlist(user_id: str, ticker: str):
     return app.state.dashboard_state.build_snapshot(user_id)
 
 
+@app.get("/api/stocks/{ticker}/history")
+async def get_stock_history(ticker: str, range: str = "1M"):
+    return {
+        "ticker": ticker.upper(),
+        "range": range,
+        "candles": app.state.dashboard_state.build_history(ticker, range),
+    }
+
+
 @app.websocket("/ws/dashboard")
 async def dashboard_socket(websocket: WebSocket) -> None:
     await app.state.websocket_hub.connect(websocket)
@@ -108,4 +117,3 @@ async def dashboard_socket(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         app.state.websocket_hub.disconnect(websocket)
-

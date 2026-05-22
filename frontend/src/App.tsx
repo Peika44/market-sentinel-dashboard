@@ -236,11 +236,11 @@ function App() {
     setSavedAlertRules(payload);
   }
 
-  async function toggleAlertRuleEnabled(ticker: string, enabled: boolean) {
+  async function toggleAlertRuleEnabled(ruleId: string, enabled: boolean) {
     setError(null);
     try {
       const response = await fetch(
-        `/api/alert-rules/${DEMO_USER_ID}/${ticker}?enabled=${enabled}`,
+        `/api/alert-rules/${DEMO_USER_ID}/${ruleId}?enabled=${enabled}`,
         { method: "PATCH" },
       );
       if (!response.ok) {
@@ -714,7 +714,7 @@ function App() {
                   <div className="saved-drafts-list">
                     {savedAlertRules.slice(0, 4).map((rule) => (
                       <div
-                        key={`${rule.ticker}-${rule.updated_at}`}
+                        key={rule.rule_id}
                         className="saved-draft-item"
                       >
                         <div className="triggered-alert-header">
@@ -729,14 +729,19 @@ function App() {
                         <div className="inline-action-row">
                           <button
                             className="ghost-button"
-                            onClick={() => setAlertRuleDraft(rule.payload)}
+                            onClick={() =>
+                              setAlertRuleDraft({
+                                ...rule.payload,
+                                ruleId: rule.rule_id,
+                              })
+                            }
                           >
                             Edit
                           </button>
                           <button
                             className="ghost-button"
                             onClick={() =>
-                              void toggleAlertRuleEnabled(rule.ticker, !rule.payload.enabled)
+                              void toggleAlertRuleEnabled(rule.rule_id, !rule.payload.enabled)
                             }
                           >
                             {rule.payload.enabled ? "Disable" : "Enable"}

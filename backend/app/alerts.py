@@ -33,6 +33,7 @@ class AlertEngine:
         previous_history = self._state.recent_history_before_event(event.ticker, limit=24)
 
         for row in rules:
+            rule_id = row["rule_id"]
             payload = AlertRulePayload.model_validate(row["payload"])
             if not payload.enabled or payload.ticker.upper() != event.ticker.upper():
                 continue
@@ -104,8 +105,7 @@ class AlertEngine:
                 continue
 
             cooldown_key = (
-                f"alert_cooldown:{DEFAULT_USER_ID}:{event.ticker.upper()}:"
-                f"{payload.condition}:{payload.threshold}:{payload.channel}"
+                f"alert_cooldown:{DEFAULT_USER_ID}:{rule_id}"
             )
             if self._cache.get_json(cooldown_key) is not None:
                 logger.info("alert COOLDOWN %s", cooldown_key)
@@ -113,6 +113,7 @@ class AlertEngine:
 
             triggered_at = datetime.now(timezone.utc).isoformat()
             stored_payload = {
+                "rule_id": rule_id,
                 "ticker": event.ticker.upper(),
                 "condition": payload.condition,
                 "threshold": payload.threshold,

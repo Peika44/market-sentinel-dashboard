@@ -348,13 +348,12 @@ class DashboardState:
         return self._store.list_trade_plan_drafts(user_id)
 
     def save_alert_rule(self, user_id: str, payload: dict, updated_at: str) -> None:
-        ticker = str(payload["ticker"]).upper()
-        self._store.save_alert_rule(user_id, ticker, payload, updated_at)
+        self._store.save_alert_rule(user_id, payload, updated_at)
 
     def list_alert_rules(self, user_id: str) -> list[dict]:
         return self._store.list_alert_rules(user_id)
 
     def set_alert_rule_enabled(
-        self, user_id: str, ticker: str, enabled: bool, updated_at: str
+        self, user_id: str, rule_id: str, enabled: bool, updated_at: str
     ) -> dict | None:
-        return self._store.set_alert_rule_enabled(user_id, ticker, enabled, updated_at)
+        return self._store.set_alert_rule_enabled(user_id, rule_id, enabled, updated_at)

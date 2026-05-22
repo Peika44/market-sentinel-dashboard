@@ -59,6 +59,7 @@ class StoredTradePlanDraft(BaseModel):
 
 
 class AlertRulePayload(BaseModel):
+    ruleId: str | None = None
     ticker: str
     condition: str
     threshold: str
@@ -73,12 +74,14 @@ class SaveAlertRuleRequest(BaseModel):
 
 
 class StoredAlertRule(BaseModel):
+    rule_id: str
     ticker: str
     updated_at: str
     payload: AlertRulePayload
 
 
 class TriggeredAlertPayload(BaseModel):
+    rule_id: str | None = None
     ticker: str
     condition: str
     threshold: str

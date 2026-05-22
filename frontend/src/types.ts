@@ -65,6 +65,7 @@ export interface StoredTradePlanDraft {
 }
 
 export interface AlertRuleDraft {
+  ruleId?: string;
   ticker: string;
   condition: string;
   threshold: string;
@@ -74,6 +75,7 @@ export interface AlertRuleDraft {
 }
 
 export interface StoredAlertRule {
+  rule_id: string;
   ticker: string;
   updated_at: string;
   payload: AlertRuleDraft;

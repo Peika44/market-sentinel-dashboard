@@ -161,6 +161,7 @@ async def list_alert_rules(user_id: str):
     rows = app.state.dashboard_state.list_alert_rules(user_id)
     return [
         StoredAlertRule(
+            rule_id=row["rule_id"],
             ticker=row["ticker"],
             updated_at=row["updated_at"],
             payload=row["payload"],
@@ -180,12 +181,12 @@ async def save_alert_rule(payload: SaveAlertRuleRequest):
     return {"ok": True, "updated_at": updated_at}
 
 
-@app.patch("/api/alert-rules/{user_id}/{ticker}")
-async def update_alert_rule_enabled(user_id: str, ticker: str, enabled: bool):
+@app.patch("/api/alert-rules/{user_id}/{rule_id}")
+async def update_alert_rule_enabled(user_id: str, rule_id: str, enabled: bool):
     updated_at = datetime.now(timezone.utc).isoformat()
     payload = app.state.dashboard_state.set_alert_rule_enabled(
         user_id,
-        ticker,
+        rule_id,
         enabled,
         updated_at,
     )

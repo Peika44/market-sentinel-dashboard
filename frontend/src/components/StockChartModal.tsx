@@ -1,4 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  CandlestickSeries,
+  ColorType,
+  CrosshairMode,
+  LineStyle,
+  createChart,
+  type CandlestickData,
+  type IChartApi,
+  type ISeriesApi,
+  type Time,
+} from "lightweight-charts";
 
 import type { CandlePoint, HistoryRange, StockCard } from "../types";
 
@@ -12,46 +23,94 @@ function formatCurrency(value: number): string {
   }).format(value);
 }
 
-function HistoryChart({ candles }: { candles: CandlePoint[] }) {
-  const closes = candles.map((candle) => candle.close);
-  const min = Math.min(...closes);
-  const max = Math.max(...closes);
-  const spread = max - min || 1;
+function normalizeCandles(candles: CandlePoint[]): CandlestickData<Time>[] {
+  return candles.map((candle, index) => ({
+    time: index as Time,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+  }));
+}
 
-  const points = closes
-    .map((close, index) => {
-      const x = (index / Math.max(closes.length - 1, 1)) * 100;
-      const y = 100 - ((close - min) / spread) * 100;
-      return `${x},${y}`;
-    })
-    .join(" ");
+function CandleChart({
+  candles,
+  labels,
+}: {
+  candles: CandlePoint[];
+  labels: string[];
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
 
-  return (
-    <div className="modal-chart-shell">
-      <svg className="modal-chart" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="chart-fill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="rgba(124, 208, 255, 0.55)" />
-            <stop offset="100%" stopColor="rgba(124, 208, 255, 0.02)" />
-          </linearGradient>
-        </defs>
-        <polygon
-          points={`0,100 ${points} 100,100`}
-          fill="url(#chart-fill)"
-        />
-        <polyline
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.4"
-          points={points}
-        />
-      </svg>
-      <div className="modal-axis">
-        <span>{candles[0]?.label ?? ""}</span>
-        <span>{candles[candles.length - 1]?.label ?? ""}</span>
-      </div>
-    </div>
-  );
+  useEffect(() => {
+    if (!containerRef.current || candles.length === 0) {
+      return;
+    }
+
+    const chart = createChart(containerRef.current, {
+      layout: {
+        background: { type: ColorType.Solid, color: "#171d2a" },
+        textColor: "#c9d4df",
+      },
+      grid: {
+        vertLines: {
+          color: "rgba(255,255,255,0.05)",
+          style: LineStyle.Dotted,
+        },
+        horzLines: {
+          color: "rgba(255,255,255,0.05)",
+          style: LineStyle.Dotted,
+        },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+      },
+      rightPriceScale: {
+        borderColor: "rgba(255,255,255,0.12)",
+      },
+      timeScale: {
+        borderColor: "rgba(255,255,255,0.12)",
+        tickMarkFormatter: (time: Time) => labels[Number(time)] ?? "",
+      },
+      height: 520,
+      width: containerRef.current.clientWidth,
+    });
+
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: "#82d2ff",
+      downColor: "#ff8d8d",
+      wickUpColor: "#82d2ff",
+      wickDownColor: "#ff8d8d",
+      borderVisible: false,
+    });
+
+    series.setData(normalizeCandles(candles));
+    chart.timeScale().fitContent();
+
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (containerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({
+          width: containerRef.current.clientWidth,
+        });
+      }
+    });
+
+    resizeObserver.observe(containerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+      chartRef.current?.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, [candles, labels]);
+
+  return <div ref={containerRef} className="modal-chart-canvas" />;
 }
 
 interface StockChartModalProps {
@@ -124,6 +183,8 @@ export function StockChartModal({ stock, onClose }: StockChartModalProps) {
     };
   }, [candles]);
 
+  const labels = useMemo(() => candles.map((candle) => candle.label), [candles]);
+
   return (
     <div className="modal-backdrop" onClick={(event) => event.target === event.currentTarget && onClose()}>
       <div className="modal-card">
@@ -152,7 +213,15 @@ export function StockChartModal({ stock, onClose }: StockChartModalProps) {
 
         {loading ? <div className="modal-loading">Loading history...</div> : null}
         {error ? <div className="error-banner">{error}</div> : null}
-        {!loading && !error && candles.length > 0 ? <HistoryChart candles={candles} /> : null}
+        {!loading && !error && candles.length > 0 ? (
+          <div className="modal-chart-shell">
+            <CandleChart candles={candles} labels={labels} />
+            <div className="modal-axis">
+              <span>{candles[0]?.label ?? ""}</span>
+              <span>{candles[candles.length - 1]?.label ?? ""}</span>
+            </div>
+          </div>
+        ) : null}
 
         {stats ? (
           <div className="modal-metrics">

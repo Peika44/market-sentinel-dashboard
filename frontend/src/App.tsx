@@ -45,6 +45,29 @@ function buildOverviewPreview(quote: IndexQuote): StockCard {
   };
 }
 
+interface TradePlanDraft {
+  ticker: string;
+  entryPrice: string;
+  stopLoss: string;
+  targetPrice: string;
+  thesis: string;
+  riskPercent: string;
+  positionSizeUsd: string;
+}
+
+function buildTradePlanDraft(stock: StockCard): TradePlanDraft {
+  const entry = stock.current_price || 0;
+  return {
+    ticker: stock.ticker,
+    entryPrice: entry.toFixed(2),
+    stopLoss: (entry * 0.97).toFixed(2),
+    targetPrice: (entry * 1.06).toFixed(2),
+    thesis: `${stock.ticker} is ranked high on the dashboard with ${stock.sentiment_label.toLowerCase()} sentiment and an urgency score of ${stock.urgency_score.toFixed(0)}.`,
+    riskPercent: "1.0",
+    positionSizeUsd: "1000",
+  };
+}
+
 function Sparkline({ points }: { points: number[] }) {
   if (points.length < 2) {
     return <div className="chart-empty">Waiting for more ticks...</div>;
@@ -78,6 +101,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const [tradePlanDraft, setTradePlanDraft] = useState<TradePlanDraft | null>(null);
   const marketStatus = useMarketStatus();
 
   async function loadDashboard() {
@@ -363,6 +387,16 @@ function App() {
                 >
                   Open Chart
                 </button>
+                <button
+                  className="ghost-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedSymbol(stock.ticker);
+                    setTradePlanDraft(buildTradePlanDraft(stock));
+                  }}
+                >
+                  Seed Trade Plan
+                </button>
               </div>
             </article>
           ))}
@@ -410,6 +444,12 @@ function App() {
                 <button className="refresh-button" onClick={() => setShowChart(true)}>
                   View Range Chart
                 </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => setTradePlanDraft(buildTradePlanDraft(selected))}
+                >
+                  Open Trade Plan Seed
+                </button>
               </div>
 
               <p className="detail-copy">
@@ -431,6 +471,136 @@ function App() {
           stock={selected}
           onClose={() => setShowChart(false)}
         />
+      ) : null}
+
+      {tradePlanDraft ? (
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setTradePlanDraft(null);
+            }
+          }}
+        >
+          <div className="modal-card trade-plan-modal">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Trade Plan Seed</p>
+                <h2>{tradePlanDraft.ticker}</h2>
+                <p className="detail-name">
+                  Lightweight workflow bridge from dashboard selection to an executable plan draft.
+                </p>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setTradePlanDraft(null)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="trade-plan-grid">
+              <label>
+                Entry Price
+                <input
+                  value={tradePlanDraft.entryPrice}
+                  onChange={(event) =>
+                    setTradePlanDraft((current) =>
+                      current
+                        ? { ...current, entryPrice: event.target.value }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Stop Loss
+                <input
+                  value={tradePlanDraft.stopLoss}
+                  onChange={(event) =>
+                    setTradePlanDraft((current) =>
+                      current
+                        ? { ...current, stopLoss: event.target.value }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Target Price
+                <input
+                  value={tradePlanDraft.targetPrice}
+                  onChange={(event) =>
+                    setTradePlanDraft((current) =>
+                      current
+                        ? { ...current, targetPrice: event.target.value }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Risk %
+                <input
+                  value={tradePlanDraft.riskPercent}
+                  onChange={(event) =>
+                    setTradePlanDraft((current) =>
+                      current
+                        ? { ...current, riskPercent: event.target.value }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Position Size USD
+                <input
+                  value={tradePlanDraft.positionSizeUsd}
+                  onChange={(event) =>
+                    setTradePlanDraft((current) =>
+                      current
+                        ? { ...current, positionSizeUsd: event.target.value }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+              <label className="trade-plan-wide">
+                Thesis
+                <textarea
+                  value={tradePlanDraft.thesis}
+                  onChange={(event) =>
+                    setTradePlanDraft((current) =>
+                      current
+                        ? { ...current, thesis: event.target.value }
+                        : current,
+                    )
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="trade-plan-summary">
+              <div>
+                <span>Risk / Reward</span>
+                <strong>
+                  {(() => {
+                    const entry = Number.parseFloat(tradePlanDraft.entryPrice);
+                    const stop = Number.parseFloat(tradePlanDraft.stopLoss);
+                    const target = Number.parseFloat(tradePlanDraft.targetPrice);
+                    const risk = Math.abs(entry - stop);
+                    const reward = Math.abs(target - entry);
+                    return risk > 0 ? `${(reward / risk).toFixed(2)}R` : "—";
+                  })()}
+                </strong>
+              </div>
+              <div>
+                <span>Workflow Note</span>
+                <strong>Use this draft as a handoff into a fuller trading workflow.</strong>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

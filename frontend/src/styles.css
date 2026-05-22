@@ -18,7 +18,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -207,6 +208,11 @@ code {
   padding: 12px 14px;
 }
 
+textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
 .toolbar-note {
   margin: 0;
   color: #b6c1cf;
@@ -353,6 +359,9 @@ code {
 
 .card-actions {
   margin-top: 14px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .sentiment-badge,
@@ -549,6 +558,57 @@ code {
   margin-bottom: 6px;
 }
 
+.trade-plan-modal {
+  width: min(980px, 100%);
+}
+
+.trade-plan-grid {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.trade-plan-grid label {
+  display: grid;
+  gap: 8px;
+  color: #dbe7f7;
+  font-size: 0.95rem;
+}
+
+.trade-plan-grid input,
+.trade-plan-grid textarea {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f2f5f9;
+  padding: 12px 14px;
+}
+
+.trade-plan-wide {
+  grid-column: 1 / -1;
+}
+
+.trade-plan-summary {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.trade-plan-summary > div {
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.trade-plan-summary span {
+  display: block;
+  color: #9aa6b6;
+  font-size: 0.84rem;
+  margin-bottom: 6px;
+}
+
 @media (max-width: 1024px) {
   .content-grid {
     grid-template-columns: 1fr;
@@ -590,8 +650,14 @@ code {
   }
 
   .modal-header,
-  .modal-metrics {
+  .modal-metrics,
+  .trade-plan-summary {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .trade-plan-grid,
+  .trade-plan-summary {
+    grid-template-columns: 1fr;
   }
 }

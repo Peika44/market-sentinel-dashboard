@@ -19,6 +19,7 @@ class StockCard(BaseModel):
     current_price: float
     change_pct: float
     volume: int
+    last_updated: datetime
     sentiment_score: float
     sentiment_label: str
     urgency_score: float
@@ -34,6 +35,47 @@ class DashboardSnapshot(BaseModel):
 class WatchlistMutation(BaseModel):
     user_id: str
     ticker: str
+
+
+class TradePlanDraftPayload(BaseModel):
+    ticker: str
+    entryPrice: str
+    stopLoss: str
+    targetPrice: str
+    thesis: str
+    riskPercent: str
+    positionSizeUsd: str
+
+
+class SaveTradePlanDraftRequest(BaseModel):
+    user_id: str
+    draft: TradePlanDraftPayload
+
+
+class StoredTradePlanDraft(BaseModel):
+    ticker: str
+    updated_at: str
+    payload: TradePlanDraftPayload
+
+
+class AlertRulePayload(BaseModel):
+    ticker: str
+    condition: str
+    threshold: str
+    cooldownMinutes: str
+    channel: str
+    enabled: bool = True
+
+
+class SaveAlertRuleRequest(BaseModel):
+    user_id: str
+    rule: AlertRulePayload
+
+
+class StoredAlertRule(BaseModel):
+    ticker: str
+    updated_at: str
+    payload: AlertRulePayload
 
 
 class IndexQuote(BaseModel):

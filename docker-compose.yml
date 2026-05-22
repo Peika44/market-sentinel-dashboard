@@ -24,28 +24,52 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build:
       context: ./backend
+    env_file:
+      - .env
     environment:
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       KAFKA_TOPIC: market-prices
       DEFAULT_USER_ID: demo-user
+      SQLITE_DB_PATH: /data/market_sentinel.db
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       redpanda:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
+    volumes:
+      - backend_data:/data
 
   market-feed:
     build:
       context: ./market_feed
+    env_file:
+      - .env
     environment:
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       KAFKA_TOPIC: market-prices
       PUBLISH_INTERVAL_SECONDS: "1.0"
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       redpanda:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   frontend:
@@ -57,3 +81,5 @@ services:
     ports:
       - "3000:80"
 
+volumes:
+  backend_data:

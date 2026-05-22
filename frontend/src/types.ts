@@ -4,6 +4,7 @@ export interface StockCard {
   current_price: number;
   change_pct: number;
   volume: number;
+  last_updated: string;
   sentiment_score: number;
   sentiment_label: string;
   urgency_score: number;
@@ -45,4 +46,35 @@ export interface MarketEvent {
   change_pct: number;
   volume: number;
   as_of: string;
+}
+
+export interface TradePlanDraft {
+  ticker: string;
+  entryPrice: string;
+  stopLoss: string;
+  targetPrice: string;
+  thesis: string;
+  riskPercent: string;
+  positionSizeUsd: string;
+}
+
+export interface StoredTradePlanDraft {
+  ticker: string;
+  updated_at: string;
+  payload: TradePlanDraft;
+}
+
+export interface AlertRuleDraft {
+  ticker: string;
+  condition: string;
+  threshold: string;
+  cooldownMinutes: string;
+  channel: string;
+  enabled: boolean;
+}
+
+export interface StoredAlertRule {
+  ticker: string;
+  updated_at: string;
+  payload: AlertRuleDraft;
 }

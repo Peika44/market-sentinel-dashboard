@@ -1,11 +1,15 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import type {
+  AlertRuleDraft,
   DashboardSnapshot,
   IndexQuote,
   MarketEvent,
   MarketOverviewResponse,
+  StoredAlertRule,
   StockCard,
+  StoredTradePlanDraft,
+  TradePlanDraft,
 } from "./types";
 import { StockChartModal } from "./components/StockChartModal";
 import { useMarketStatus } from "./hooks/useMarketStatus";
@@ -38,21 +42,12 @@ function buildOverviewPreview(quote: IndexQuote): StockCard {
     current_price: quote.current_price,
     change_pct: quote.change_pct,
     volume: 0,
+    last_updated: new Date().toISOString(),
     sentiment_score: 0.5,
     sentiment_label: "Neutral",
     urgency_score: computeUrgency(Math.abs(quote.change_pct), 0.5),
     history: [quote.current_price],
   };
-}
-
-interface TradePlanDraft {
-  ticker: string;
-  entryPrice: string;
-  stopLoss: string;
-  targetPrice: string;
-  thesis: string;
-  riskPercent: string;
-  positionSizeUsd: string;
 }
 
 function buildTradePlanDraft(stock: StockCard): TradePlanDraft {
@@ -65,6 +60,34 @@ function buildTradePlanDraft(stock: StockCard): TradePlanDraft {
     thesis: `${stock.ticker} is ranked high on the dashboard with ${stock.sentiment_label.toLowerCase()} sentiment and an urgency score of ${stock.urgency_score.toFixed(0)}.`,
     riskPercent: "1.0",
     positionSizeUsd: "1000",
+  };
+}
+
+function buildAlertRuleDraft(stock: StockCard): AlertRuleDraft {
+  return {
+    ticker: stock.ticker,
+    condition: "urgency_above",
+    threshold: Math.max(40, Math.round(stock.urgency_score)).toString(),
+    cooldownMinutes: "15",
+    channel: "dashboard",
+    enabled: true,
+  };
+}
+
+function getFreshnessLabel(lastUpdated: string): { label: string; stale: boolean } {
+  const updatedAt = new Date(lastUpdated).getTime();
+  const ageSeconds = Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
+
+  if (ageSeconds <= 10) {
+    return { label: `Updated ${ageSeconds}s ago`, stale: false };
+  }
+  if (ageSeconds <= 60) {
+    return { label: `Updated ${ageSeconds}s ago`, stale: false };
+  }
+  const ageMinutes = Math.round(ageSeconds / 60);
+  return {
+    label: `Updated ${ageMinutes}m ago`,
+    stale: ageMinutes >= 2,
   };
 }
 
@@ -102,6 +125,11 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [showChart, setShowChart] = useState(false);
   const [tradePlanDraft, setTradePlanDraft] = useState<TradePlanDraft | null>(null);
+  const [savedDrafts, setSavedDrafts] = useState<StoredTradePlanDraft[]>([]);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [alertRuleDraft, setAlertRuleDraft] = useState<AlertRuleDraft | null>(null);
+  const [savedAlertRules, setSavedAlertRules] = useState<StoredAlertRule[]>([]);
+  const [savingAlertRule, setSavingAlertRule] = useState(false);
   const marketStatus = useMarketStatus();
 
   async function loadDashboard() {
@@ -126,11 +154,31 @@ function App() {
     setIndices(payload.indices);
   }
 
+  async function loadDrafts() {
+    const response = await fetch(`/api/trade-plan-drafts/${DEMO_USER_ID}`);
+    if (!response.ok) {
+      throw new Error("Failed to load trade plan drafts.");
+    }
+
+    const payload = (await response.json()) as StoredTradePlanDraft[];
+    setSavedDrafts(payload);
+  }
+
+  async function loadAlertRules() {
+    const response = await fetch(`/api/alert-rules/${DEMO_USER_ID}`);
+    if (!response.ok) {
+      throw new Error("Failed to load alert rules.");
+    }
+
+    const payload = (await response.json()) as StoredAlertRule[];
+    setSavedAlertRules(payload);
+  }
+
   async function refresh() {
     setError(null);
     setLoading(true);
     try {
-      await Promise.all([loadDashboard(), loadOverview()]);
+      await Promise.all([loadDashboard(), loadOverview(), loadDrafts(), loadAlertRules()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard refresh failed.");
     } finally {
@@ -184,6 +232,64 @@ function App() {
   useEffect(() => {
     refresh();
   }, []);
+
+  async function persistDraft() {
+    if (!tradePlanDraft) {
+      return;
+    }
+
+    setSavingDraft(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/trade-plan-drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          draft: tradePlanDraft,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save trade plan draft.");
+      }
+
+      await loadDrafts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save trade plan draft.");
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  async function persistAlertRule() {
+    if (!alertRuleDraft) {
+      return;
+    }
+
+    setSavingAlertRule(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/alert-rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          rule: alertRuleDraft,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save alert rule.");
+      }
+
+      await loadAlertRules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save alert rule.");
+    } finally {
+      setSavingAlertRule(false);
+    }
+  }
 
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -372,6 +478,17 @@ function App() {
                 <span className="urgency-badge">Urgency {stock.urgency_score.toFixed(0)}</span>
               </div>
 
+              <div className="freshness-row">
+                {(() => {
+                  const freshness = getFreshnessLabel(stock.last_updated);
+                  return (
+                    <span className={`freshness-pill ${freshness.stale ? "stale" : "fresh"}`}>
+                      {freshness.label}
+                    </span>
+                  );
+                })()}
+              </div>
+
               <div className="mini-chart">
                 <Sparkline points={stock.history} />
               </div>
@@ -396,6 +513,16 @@ function App() {
                   }}
                 >
                   Seed Trade Plan
+                </button>
+                <button
+                  className="ghost-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedSymbol(stock.ticker);
+                    setAlertRuleDraft(buildAlertRuleDraft(stock));
+                  }}
+                >
+                  Create Alert
                 </button>
               </div>
             </article>
@@ -450,12 +577,60 @@ function App() {
                 >
                   Open Trade Plan Seed
                 </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => setAlertRuleDraft(buildAlertRuleDraft(selected))}
+                >
+                  Open Alert Rule
+                </button>
               </div>
 
               <p className="detail-copy">
                 Urgency blends price movement with sentiment confidence so the UI can surface
                 names that need attention without polling every chart view individually.
               </p>
+
+              <div className="saved-drafts-panel">
+                <p className="eyebrow">Saved Drafts</p>
+                {savedDrafts.length === 0 ? (
+                  <p className="draft-empty-state">No saved trade-plan drafts yet.</p>
+                ) : (
+                  <div className="saved-drafts-list">
+                    {savedDrafts.slice(0, 4).map((draft) => (
+                      <button
+                        key={`${draft.ticker}-${draft.updated_at}`}
+                        className="saved-draft-item"
+                        onClick={() => setTradePlanDraft(draft.payload)}
+                      >
+                        <strong>{draft.ticker}</strong>
+                        <span>{new Date(draft.updated_at).toLocaleString()}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="saved-drafts-panel">
+                <p className="eyebrow">Saved Alerts</p>
+                {savedAlertRules.length === 0 ? (
+                  <p className="draft-empty-state">No saved alert rules yet.</p>
+                ) : (
+                  <div className="saved-drafts-list">
+                    {savedAlertRules.slice(0, 4).map((rule) => (
+                      <button
+                        key={`${rule.ticker}-${rule.updated_at}`}
+                        className="saved-draft-item"
+                        onClick={() => setAlertRuleDraft(rule.payload)}
+                      >
+                        <strong>{rule.ticker}</strong>
+                        <span>
+                          {rule.payload.condition} · {rule.payload.threshold} · {new Date(rule.updated_at).toLocaleString()}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </>
           ) : (
             <div className="empty-panel">
@@ -598,6 +773,106 @@ function App() {
                 <span>Workflow Note</span>
                 <strong>Use this draft as a handoff into a fuller trading workflow.</strong>
               </div>
+            </div>
+
+            <div className="trade-plan-actions">
+              <button
+                className="refresh-button"
+                onClick={() => void persistDraft()}
+                disabled={savingDraft}
+              >
+                {savingDraft ? "Saving..." : "Save Draft"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {alertRuleDraft ? (
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setAlertRuleDraft(null);
+            }
+          }}
+        >
+          <div className="modal-card trade-plan-modal">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Alert Rule</p>
+                <h2>{alertRuleDraft.ticker}</h2>
+                <p className="detail-name">
+                  Minimal alert configuration to start building a decision-support loop.
+                </p>
+              </div>
+              <button
+                className="modal-close-button"
+                onClick={() => setAlertRuleDraft(null)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="trade-plan-grid">
+              <label>
+                Condition
+                <select
+                  value={alertRuleDraft.condition}
+                  onChange={(event) =>
+                    setAlertRuleDraft((current) =>
+                      current ? { ...current, condition: event.target.value } : current,
+                    )
+                  }
+                >
+                  <option value="urgency_above">Urgency Above</option>
+                  <option value="price_change_above">Price Change Above %</option>
+                  <option value="price_change_below">Price Change Below %</option>
+                </select>
+              </label>
+              <label>
+                Threshold
+                <input
+                  value={alertRuleDraft.threshold}
+                  onChange={(event) =>
+                    setAlertRuleDraft((current) =>
+                      current ? { ...current, threshold: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Cooldown Minutes
+                <input
+                  value={alertRuleDraft.cooldownMinutes}
+                  onChange={(event) =>
+                    setAlertRuleDraft((current) =>
+                      current ? { ...current, cooldownMinutes: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Channel
+                <input
+                  value={alertRuleDraft.channel}
+                  onChange={(event) =>
+                    setAlertRuleDraft((current) =>
+                      current ? { ...current, channel: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="trade-plan-actions">
+              <button
+                className="refresh-button"
+                onClick={() => void persistAlertRule()}
+                disabled={savingAlertRule}
+              >
+                {savingAlertRule ? "Saving..." : "Save Alert Rule"}
+              </button>
             </div>
           </div>
         </div>

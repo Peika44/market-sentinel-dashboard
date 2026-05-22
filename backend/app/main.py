@@ -2,14 +2,25 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 
 from aiokafka import AIOKafkaConsumer
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.models import MarketEvent, WatchlistMutation
+from app.models import (
+    AlertRulePayload,
+    MarketEvent,
+    SaveAlertRuleRequest,
+    SaveTradePlanDraftRequest,
+    StoredAlertRule,
+    StoredTradePlanDraft,
+    WatchlistMutation,
+)
+from app.cache import RedisCache
 from app.state import DashboardState
+from app.storage import SQLiteStore
 from app.ws import WebSocketHub
 
 logger = logging.getLogger("market_sentinel_backend")
@@ -47,7 +58,9 @@ async def consume_market_events(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.dashboard_state = DashboardState()
+    app.state.store = SQLiteStore(settings.sqlite_db_path)
+    app.state.cache = RedisCache(settings.redis_url)
+    app.state.dashboard_state = DashboardState(app.state.store, app.state.cache)
     app.state.websocket_hub = WebSocketHub()
     consumer_task = asyncio.create_task(consume_market_events(app))
 
@@ -98,6 +111,54 @@ async def add_to_watchlist(payload: WatchlistMutation):
 async def remove_from_watchlist(user_id: str, ticker: str):
     app.state.dashboard_state.remove_from_watchlist(user_id, ticker)
     return app.state.dashboard_state.build_snapshot(user_id)
+
+
+@app.get("/api/trade-plan-drafts/{user_id}", response_model=list[StoredTradePlanDraft])
+async def list_trade_plan_drafts(user_id: str):
+    rows = app.state.dashboard_state.list_trade_plan_drafts(user_id)
+    return [
+        StoredTradePlanDraft(
+            ticker=row["ticker"],
+            updated_at=row["updated_at"],
+            payload=row["payload"],
+        )
+        for row in rows
+    ]
+
+
+@app.post("/api/trade-plan-drafts")
+async def save_trade_plan_draft(payload: SaveTradePlanDraftRequest):
+    updated_at = datetime.now(timezone.utc).isoformat()
+    app.state.dashboard_state.save_trade_plan_draft(
+        payload.user_id,
+        payload.draft.model_dump(),
+        updated_at,
+    )
+    return {"ok": True, "updated_at": updated_at}
+
+
+@app.get("/api/alert-rules/{user_id}", response_model=list[StoredAlertRule])
+async def list_alert_rules(user_id: str):
+    rows = app.state.dashboard_state.list_alert_rules(user_id)
+    return [
+        StoredAlertRule(
+            ticker=row["ticker"],
+            updated_at=row["updated_at"],
+            payload=row["payload"],
+        )
+        for row in rows
+    ]
+
+
+@app.post("/api/alert-rules")
+async def save_alert_rule(payload: SaveAlertRuleRequest):
+    updated_at = datetime.now(timezone.utc).isoformat()
+    app.state.dashboard_state.save_alert_rule(
+        payload.user_id,
+        payload.rule.model_dump(),
+        updated_at,
+    )
+    return {"ok": True, "updated_at": updated_at}
 
 
 @app.get("/api/stocks/{ticker}/history")

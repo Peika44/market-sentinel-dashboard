@@ -23,6 +23,10 @@ textarea {
   font: inherit;
 }
 
+select {
+  font: inherit;
+}
+
 code {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
@@ -357,6 +361,30 @@ textarea {
   margin-top: 16px;
 }
 
+.freshness-row {
+  margin-top: 12px;
+}
+
+.freshness-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.freshness-pill.fresh {
+  color: #a7dfc0;
+  background: rgba(72, 214, 145, 0.1);
+}
+
+.freshness-pill.stale {
+  color: #ffc187;
+  background: rgba(247, 186, 89, 0.14);
+}
+
 .card-actions {
   margin-top: 14px;
   display: flex;
@@ -473,6 +501,38 @@ textarea {
   margin-top: 18px;
 }
 
+.saved-drafts-panel {
+  margin-top: 22px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 18px;
+}
+
+.draft-empty-state {
+  color: #aeb8c7;
+  margin: 0;
+}
+
+.saved-drafts-list {
+  display: grid;
+  gap: 10px;
+}
+
+.saved-draft-item {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #f2f5f9;
+}
+
+.saved-draft-item span {
+  display: block;
+  margin-top: 4px;
+  color: #9aa6b6;
+  font-size: 0.84rem;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -528,9 +588,9 @@ textarea {
   color: #86d7ff;
 }
 
-.modal-chart {
+.modal-chart-canvas {
   width: 100%;
-  height: 320px;
+  min-height: 520px;
 }
 
 .modal-axis {
@@ -577,7 +637,8 @@ textarea {
 }
 
 .trade-plan-grid input,
-.trade-plan-grid textarea {
+.trade-plan-grid textarea,
+.trade-plan-grid select {
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.05);
@@ -607,6 +668,10 @@ textarea {
   color: #9aa6b6;
   font-size: 0.84rem;
   margin-bottom: 6px;
+}
+
+.trade-plan-actions {
+  margin-top: 20px;
 }
 
 @media (max-width: 1024px) {

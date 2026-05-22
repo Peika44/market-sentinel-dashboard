@@ -21,6 +21,7 @@ from app.models import (
     WatchlistMutation,
 )
 from app.cache import RedisCache
+from app.notifier import Notifier
 from app.state import DashboardState
 from app.storage import SQLiteStore
 from app.ws import WebSocketHub
@@ -64,7 +65,8 @@ async def lifespan(app: FastAPI):
     app.state.store = SQLiteStore(settings.sqlite_db_path)
     app.state.cache = RedisCache(settings.redis_url)
     app.state.dashboard_state = DashboardState(app.state.store, app.state.cache)
-    app.state.alert_engine = AlertEngine(app.state.store, app.state.cache)
+    app.state.notifier = Notifier()
+    app.state.alert_engine = AlertEngine(app.state.store, app.state.cache, app.state.notifier)
     app.state.websocket_hub = WebSocketHub()
     consumer_task = asyncio.create_task(consume_market_events(app))
 

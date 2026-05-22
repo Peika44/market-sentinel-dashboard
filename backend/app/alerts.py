@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.cache import RedisCache
 from app.models import AlertRulePayload, MarketEvent
+from app.notifier import Notifier
 from app.storage import SQLiteStore
 
 logger = logging.getLogger("market_sentinel_alerts")
@@ -13,9 +14,10 @@ DEFAULT_USER_ID = "demo-user"
 
 
 class AlertEngine:
-    def __init__(self, store: SQLiteStore, cache: RedisCache) -> None:
+    def __init__(self, store: SQLiteStore, cache: RedisCache, notifier: Notifier) -> None:
         self._store = store
         self._cache = cache
+        self._notifier = notifier
 
     def evaluate_market_event(self, event: MarketEvent) -> list[dict]:
         rules = self._store.list_alert_rules(DEFAULT_USER_ID)
@@ -56,7 +58,10 @@ class AlertEngine:
             if triggered_value is None:
                 continue
 
-            cooldown_key = f"alert_cooldown:{DEFAULT_USER_ID}:{event.ticker.upper()}:{payload.condition}"
+            cooldown_key = (
+                f"alert_cooldown:{DEFAULT_USER_ID}:{event.ticker.upper()}:"
+                f"{payload.condition}:{payload.threshold}:{payload.channel}"
+            )
             if self._cache.get_json(cooldown_key) is not None:
                 logger.info("alert COOLDOWN %s", cooldown_key)
                 continue
@@ -82,6 +87,11 @@ class AlertEngine:
                 cooldown_key,
                 {"triggered_at": triggered_at},
                 ttl_seconds=max(60, int(cooldown_minutes * 60)),
+            )
+            self._notifier.send(
+                payload.channel,
+                f"Alert Triggered: {event.ticker.upper()}",
+                message,
             )
             logger.info("alert TRIGGERED %s %s", event.ticker.upper(), payload.condition)
             triggered.append(

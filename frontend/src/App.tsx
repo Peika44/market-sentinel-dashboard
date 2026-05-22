@@ -75,6 +75,28 @@ function buildAlertRuleDraft(stock: StockCard): AlertRuleDraft {
   };
 }
 
+function buildTargetAlertFromTradePlan(draft: TradePlanDraft): AlertRuleDraft {
+  return {
+    ticker: draft.ticker,
+    condition: "target_hit",
+    threshold: draft.targetPrice,
+    cooldownMinutes: "15",
+    channel: "dashboard",
+    enabled: true,
+  };
+}
+
+function buildStopAlertFromTradePlan(draft: TradePlanDraft): AlertRuleDraft {
+  return {
+    ticker: draft.ticker,
+    condition: "drop_below_stop",
+    threshold: draft.stopLoss,
+    cooldownMinutes: "15",
+    channel: "dashboard",
+    enabled: true,
+  };
+}
+
 function getFreshnessLabel(lastUpdated: string): { label: string; stale: boolean } {
   const updatedAt = new Date(lastUpdated).getTime();
   const ageSeconds = Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
@@ -839,6 +861,18 @@ function App() {
                 disabled={savingDraft}
               >
                 {savingDraft ? "Saving..." : "Save Draft"}
+              </button>
+              <button
+                className="ghost-button"
+                onClick={() => setAlertRuleDraft(buildTargetAlertFromTradePlan(tradePlanDraft))}
+              >
+                Create Target Alert
+              </button>
+              <button
+                className="ghost-button"
+                onClick={() => setAlertRuleDraft(buildStopAlertFromTradePlan(tradePlanDraft))}
+              >
+                Create Stop Alert
               </button>
             </div>
           </div>

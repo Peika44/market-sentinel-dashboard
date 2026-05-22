@@ -156,6 +156,35 @@ class SQLiteStore:
                 )
             return rules
 
+    def set_alert_rule_enabled(
+        self, user_id: str, ticker: str, enabled: bool, updated_at: str
+    ) -> dict | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM alert_rules
+                WHERE user_id = ? AND ticker = ?
+                """,
+                (user_id, ticker.upper()),
+            ).fetchone()
+            if row is None:
+                return None
+
+            payload = json.loads(row["payload_json"])
+            payload["enabled"] = enabled
+
+            conn.execute(
+                """
+                UPDATE alert_rules
+                SET payload_json = ?, updated_at = ?
+                WHERE user_id = ? AND ticker = ?
+                """,
+                (json.dumps(payload), updated_at, user_id, ticker.upper()),
+            )
+            conn.commit()
+            return payload
+
     def save_triggered_alert(
         self, user_id: str, ticker: str, payload: dict, triggered_at: str
     ) -> None:

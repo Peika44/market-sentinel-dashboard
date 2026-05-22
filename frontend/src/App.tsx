@@ -236,6 +236,22 @@ function App() {
     setSavedAlertRules(payload);
   }
 
+  async function toggleAlertRuleEnabled(ticker: string, enabled: boolean) {
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/alert-rules/${DEMO_USER_ID}/${ticker}?enabled=${enabled}`,
+        { method: "PATCH" },
+      );
+      if (!response.ok) {
+        throw new Error("Failed to update alert rule.");
+      }
+      await loadAlertRules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update alert rule.");
+    }
+  }
+
   async function loadTriggeredAlerts() {
     const response = await fetch(`/api/triggered-alerts/${DEMO_USER_ID}?limit=10`);
     if (!response.ok) {
@@ -697,16 +713,36 @@ function App() {
                 ) : (
                   <div className="saved-drafts-list">
                     {savedAlertRules.slice(0, 4).map((rule) => (
-                      <button
+                      <div
                         key={`${rule.ticker}-${rule.updated_at}`}
                         className="saved-draft-item"
-                        onClick={() => setAlertRuleDraft(rule.payload)}
                       >
-                        <strong>{rule.ticker}</strong>
+                        <div className="triggered-alert-header">
+                          <strong>{rule.ticker}</strong>
+                          <span className="triggered-alert-badge">
+                            {rule.payload.enabled ? "Enabled" : "Disabled"}
+                          </span>
+                        </div>
                         <span>
                           {rule.payload.condition} · {rule.payload.threshold} · {new Date(rule.updated_at).toLocaleString()}
                         </span>
-                      </button>
+                        <div className="inline-action-row">
+                          <button
+                            className="ghost-button"
+                            onClick={() => setAlertRuleDraft(rule.payload)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={() =>
+                              void toggleAlertRuleEnabled(rule.ticker, !rule.payload.enabled)
+                            }
+                          >
+                            {rule.payload.enabled ? "Disable" : "Enable"}
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 )}

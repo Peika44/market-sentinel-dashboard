@@ -180,6 +180,20 @@ async def save_alert_rule(payload: SaveAlertRuleRequest):
     return {"ok": True, "updated_at": updated_at}
 
 
+@app.patch("/api/alert-rules/{user_id}/{ticker}")
+async def update_alert_rule_enabled(user_id: str, ticker: str, enabled: bool):
+    updated_at = datetime.now(timezone.utc).isoformat()
+    payload = app.state.dashboard_state.set_alert_rule_enabled(
+        user_id,
+        ticker,
+        enabled,
+        updated_at,
+    )
+    if payload is None:
+        return {"ok": False, "message": "Alert rule not found"}
+    return {"ok": True, "updated_at": updated_at, "payload": payload}
+
+
 @app.get("/api/triggered-alerts/{user_id}", response_model=list[StoredTriggeredAlert])
 async def list_triggered_alerts(user_id: str, limit: int = 20):
     rows = app.state.alert_engine.list_triggered_alerts(user_id, limit=limit)

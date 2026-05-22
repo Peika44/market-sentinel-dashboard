@@ -353,3 +353,8 @@ class DashboardState:
 
     def list_alert_rules(self, user_id: str) -> list[dict]:
         return self._store.list_alert_rules(user_id)
+
+    def set_alert_rule_enabled(
+        self, user_id: str, ticker: str, enabled: bool, updated_at: str
+    ) -> dict | None:
+        return self._store.set_alert_rule_enabled(user_id, ticker, enabled, updated_at)

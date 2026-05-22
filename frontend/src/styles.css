@@ -540,6 +540,12 @@ textarea {
   gap: 10px;
 }
 
+.inline-action-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .triggered-alert-badge {
   display: inline-flex;
   align-items: center;

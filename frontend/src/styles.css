@@ -533,6 +533,28 @@ textarea {
   font-size: 0.84rem;
 }
 
+.triggered-alert-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.triggered-alert-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(255, 184, 77, 0.14);
+  color: #ffd38d;
+  border: 1px solid rgba(255, 184, 77, 0.22);
+  font-size: 0.75rem;
+}
+
+.triggered-alert-time {
+  color: #7f8b99;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

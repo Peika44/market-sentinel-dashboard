@@ -148,6 +148,10 @@ function alertThresholdHelp(condition: string): string {
   return "Threshold meaning depends on the selected condition.";
 }
 
+function formatAlertCondition(condition: string): string {
+  return condition.replace(/_/g, " ").replace(/\b\w/g, (char: string) => char.toUpperCase());
+}
+
 function Sparkline({ points }: { points: number[] }) {
   if (points.length < 2) {
     return <div className="chart-empty">Waiting for more ticks...</div>;
@@ -719,9 +723,16 @@ function App() {
                         key={`${alert.ticker}-${alert.triggered_at}-${alert.payload.condition}`}
                         className="saved-draft-item"
                       >
-                        <strong>{alert.ticker}</strong>
+                        <div className="triggered-alert-header">
+                          <strong>{alert.ticker}</strong>
+                          <span className="triggered-alert-badge">
+                            {formatAlertCondition(alert.payload.condition)}
+                          </span>
+                        </div>
                         <span>{alert.payload.message}</span>
-                        <span>{new Date(alert.triggered_at).toLocaleString()}</span>
+                        <span className="triggered-alert-time">
+                          {new Date(alert.triggered_at).toLocaleString()}
+                        </span>
                       </div>
                     ))}
                   </div>

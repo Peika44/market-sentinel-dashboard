@@ -636,6 +636,12 @@ textarea {
   font-size: 0.95rem;
 }
 
+.field-help {
+  color: #9aa6b6;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .trade-plan-grid input,
 .trade-plan-grid textarea,
 .trade-plan-grid select {

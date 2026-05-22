@@ -92,6 +92,25 @@ function getFreshnessLabel(lastUpdated: string): { label: string; stale: boolean
   };
 }
 
+function alertThresholdHelp(condition: string): string {
+  if (condition === "price_change_above" || condition === "price_change_below") {
+    return "Threshold is a percent change value, e.g. 2 means 2%.";
+  }
+  if (condition === "volume_above") {
+    return "Threshold is a raw share volume number, e.g. 500000.";
+  }
+  if (condition === "target_hit" || condition === "drop_below_stop") {
+    return "Threshold is a price level, e.g. 465 or 438.";
+  }
+  if (
+    condition === "breakout_above_recent_high" ||
+    condition === "breakdown_below_recent_low"
+  ) {
+    return "Threshold is a price buffer added to recent high/low. Use 0 for an exact level break, or 0.10 / 0.25 for confirmation.";
+  }
+  return "Threshold meaning depends on the selected condition.";
+}
+
 function Sparkline({ points }: { points: number[] }) {
   if (points.length < 2) {
     return <div className="chart-empty">Waiting for more ticks...</div>;
@@ -883,6 +902,9 @@ function App() {
                     )
                   }
                 />
+                <small className="field-help">
+                  {alertThresholdHelp(alertRuleDraft.condition)}
+                </small>
               </label>
               <label>
                 Cooldown Minutes

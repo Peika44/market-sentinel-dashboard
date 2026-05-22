@@ -867,6 +867,8 @@ function App() {
                   <option value="price_change_above">Price Change Above %</option>
                   <option value="price_change_below">Price Change Below %</option>
                   <option value="volume_above">Volume Above</option>
+                  <option value="target_hit">Target Hit</option>
+                  <option value="drop_below_stop">Drop Below Stop</option>
                 </select>
               </label>
               <label>

@@ -60,6 +60,18 @@ class AlertEngine:
                     message = (
                         f"{event.ticker} volume reached {event.volume:,}, above threshold {int(threshold):,}."
                     )
+            elif payload.condition == "target_hit":
+                if event.current_price >= threshold:
+                    triggered_value = event.current_price
+                    message = (
+                        f"{event.ticker} hit target price {threshold:.2f} with last price {event.current_price:.2f}."
+                    )
+            elif payload.condition == "drop_below_stop":
+                if event.current_price <= threshold:
+                    triggered_value = event.current_price
+                    message = (
+                        f"{event.ticker} dropped below stop level {threshold:.2f} with last price {event.current_price:.2f}."
+                    )
 
             if triggered_value is None:
                 continue

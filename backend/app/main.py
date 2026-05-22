@@ -195,6 +195,14 @@ async def update_alert_rule_enabled(user_id: str, rule_id: str, enabled: bool):
     return {"ok": True, "updated_at": updated_at, "payload": payload}
 
 
+@app.delete("/api/alert-rules/{user_id}/{rule_id}")
+async def delete_alert_rule(user_id: str, rule_id: str):
+    deleted = app.state.dashboard_state.delete_alert_rule(user_id, rule_id)
+    if not deleted:
+        return {"ok": False, "message": "Alert rule not found"}
+    return {"ok": True, "rule_id": rule_id}
+
+
 @app.get("/api/triggered-alerts/{user_id}", response_model=list[StoredTriggeredAlert])
 async def list_triggered_alerts(user_id: str, limit: int = 20):
     rows = app.state.alert_engine.list_triggered_alerts(user_id, limit=limit)

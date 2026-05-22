@@ -250,6 +250,18 @@ class SQLiteStore:
             conn.commit()
             return payload
 
+    def delete_alert_rule(self, user_id: str, rule_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM alert_rules
+                WHERE user_id = ? AND rule_id = ?
+                """,
+                (user_id, rule_id),
+            )
+            conn.commit()
+            return result.rowcount > 0
+
     def save_triggered_alert(
         self, user_id: str, ticker: str, payload: dict, triggered_at: str
     ) -> None:

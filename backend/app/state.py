@@ -357,3 +357,6 @@ class DashboardState:
         self, user_id: str, rule_id: str, enabled: bool, updated_at: str
     ) -> dict | None:
         return self._store.set_alert_rule_enabled(user_id, rule_id, enabled, updated_at)
+
+    def delete_alert_rule(self, user_id: str, rule_id: str) -> bool:
+        return self._store.delete_alert_rule(user_id, rule_id)

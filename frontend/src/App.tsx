@@ -269,6 +269,21 @@ function App() {
     }
   }
 
+  async function deleteAlertRule(ruleId: string) {
+    setError(null);
+    try {
+      const response = await fetch(`/api/alert-rules/${DEMO_USER_ID}/${ruleId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        throw new Error("Failed to delete alert rule.");
+      }
+      await loadAlertRules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete alert rule.");
+    }
+  }
+
   async function loadTriggeredAlerts() {
     const response = await fetch(`/api/triggered-alerts/${DEMO_USER_ID}?limit=10`);
     if (!response.ok) {
@@ -768,6 +783,12 @@ function App() {
                                   }
                                 >
                                   {rule.payload.enabled ? "Disable" : "Enable"}
+                                </button>
+                                <button
+                                  className="ghost-button"
+                                  onClick={() => void deleteAlertRule(rule.rule_id)}
+                                >
+                                  Delete
                                 </button>
                               </div>
                             </div>

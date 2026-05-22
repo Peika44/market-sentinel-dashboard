@@ -97,6 +97,21 @@ function buildStopAlertFromTradePlan(draft: TradePlanDraft): AlertRuleDraft {
   };
 }
 
+async function saveAlertRuleDraft(userId: string, rule: AlertRuleDraft): Promise<void> {
+  const response = await fetch("/api/alert-rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: userId,
+      rule,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to save alert rule.");
+  }
+}
+
 function getFreshnessLabel(lastUpdated: string): { label: string; stale: boolean } {
   const updatedAt = new Date(lastUpdated).getTime();
   const ageSeconds = Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
@@ -329,22 +344,24 @@ function App() {
     setSavingAlertRule(true);
     setError(null);
     try {
-      const response = await fetch("/api/alert-rules", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: DEMO_USER_ID,
-          rule: alertRuleDraft,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to save alert rule.");
-      }
-
+      await saveAlertRuleDraft(DEMO_USER_ID, alertRuleDraft);
       await loadAlertRules();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save alert rule.");
+    } finally {
+      setSavingAlertRule(false);
+    }
+  }
+
+  async function createBothAlertsFromDraft(draft: TradePlanDraft) {
+    setSavingAlertRule(true);
+    setError(null);
+    try {
+      await saveAlertRuleDraft(DEMO_USER_ID, buildTargetAlertFromTradePlan(draft));
+      await saveAlertRuleDraft(DEMO_USER_ID, buildStopAlertFromTradePlan(draft));
+      await loadAlertRules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create target and stop alerts.");
     } finally {
       setSavingAlertRule(false);
     }
@@ -873,6 +890,13 @@ function App() {
                 onClick={() => setAlertRuleDraft(buildStopAlertFromTradePlan(tradePlanDraft))}
               >
                 Create Stop Alert
+              </button>
+              <button
+                className="ghost-button"
+                onClick={() => void createBothAlertsFromDraft(tradePlanDraft)}
+                disabled={savingAlertRule}
+              >
+                {savingAlertRule ? "Creating..." : "Create Both Alerts"}
               </button>
             </div>
           </div>

@@ -95,3 +95,18 @@ export interface StoredTriggeredAlert {
   triggered_at: string;
   payload: TriggeredAlertPayload;
 }
+
+export interface JournalEntryDraft {
+  ticker: string;
+  stage: string;
+  thesis: string;
+  review: string;
+  outcome: string;
+}
+
+export interface StoredJournalEntry {
+  entry_id: string;
+  ticker: string;
+  updated_at: string;
+  payload: JournalEntryDraft;
+}

@@ -53,6 +53,17 @@ class SQLiteStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS journal_entries (
+                    entry_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def _ensure_alert_rules_table(self, conn: sqlite3.Connection) -> None:
@@ -297,6 +308,47 @@ class SQLiteStore:
                     }
                 )
             return alerts
+
+    def save_journal_entry(self, user_id: str, payload: dict, updated_at: str) -> str:
+        entry_id = str(payload.get("entryId") or f"journal_{uuid4().hex[:12]}")
+        payload["entryId"] = entry_id
+        ticker = str(payload["ticker"]).upper()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO journal_entries (entry_id, user_id, ticker, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(entry_id)
+                DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                """,
+                (entry_id, user_id, ticker, json.dumps(payload), updated_at),
+            )
+            conn.commit()
+            return entry_id
+
+    def list_journal_entries(self, user_id: str, limit: int = 12) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT entry_id, ticker, payload_json, updated_at
+                FROM journal_entries
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+            entries: list[dict] = []
+            for row in rows:
+                entries.append(
+                    {
+                        "entry_id": row["entry_id"],
+                        "ticker": row["ticker"],
+                        "updated_at": row["updated_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+            return entries
 
 
 __all__ = ["SQLiteStore"]

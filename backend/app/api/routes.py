@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
+    SaveJournalEntryRequest,
     SaveAlertRuleRequest,
     SaveTradePlanDraftRequest,
     StoredAlertRule,
+    StoredJournalEntry,
     StoredTriggeredAlert,
     StoredTradePlanDraft,
     WatchlistMutation,
@@ -121,6 +123,29 @@ def register_routes(app: FastAPI) -> None:
             )
             for row in rows
         ]
+
+    @app.get("/api/journal-entries/{user_id}", response_model=list[StoredJournalEntry])
+    async def list_journal_entries(user_id: str, limit: int = 12):
+        rows = app.state.dashboard_state.list_journal_entries(user_id, limit=limit)
+        return [
+            StoredJournalEntry(
+                entry_id=row["entry_id"],
+                ticker=row["ticker"],
+                updated_at=row["updated_at"],
+                payload=row["payload"],
+            )
+            for row in rows
+        ]
+
+    @app.post("/api/journal-entries")
+    async def save_journal_entry(payload: SaveJournalEntryRequest):
+        updated_at = datetime.now(timezone.utc).isoformat()
+        app.state.dashboard_state.save_journal_entry(
+            payload.user_id,
+            payload.entry.model_dump(),
+            updated_at,
+        )
+        return {"ok": True, "updated_at": updated_at}
 
     @app.get("/api/stocks/{ticker}/history")
     async def get_stock_history(ticker: str, range: str = "1M"):

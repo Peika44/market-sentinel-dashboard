@@ -4,9 +4,11 @@ import type {
   AlertRuleDraft,
   DashboardSnapshot,
   IndexQuote,
+  JournalEntryDraft,
   MarketEvent,
   MarketOverviewResponse,
   StoredAlertRule,
+  StoredJournalEntry,
   StockCard,
   StoredTradePlanDraft,
   StoredTriggeredAlert,
@@ -94,6 +96,16 @@ function buildStopAlertFromTradePlan(draft: TradePlanDraft): AlertRuleDraft {
     cooldownMinutes: "15",
     channel: "dashboard",
     enabled: true,
+  };
+}
+
+function buildJournalDraft(stock: StockCard): JournalEntryDraft {
+  return {
+    ticker: stock.ticker,
+    stage: "monitoring",
+    thesis: `${stock.ticker} remains on the dashboard because of its current urgency and sentiment profile.`,
+    review: "",
+    outcome: "",
   };
 }
 
@@ -208,6 +220,9 @@ function App() {
   const [savedAlertRules, setSavedAlertRules] = useState<StoredAlertRule[]>([]);
   const [savingAlertRule, setSavingAlertRule] = useState(false);
   const [triggeredAlerts, setTriggeredAlerts] = useState<StoredTriggeredAlert[]>([]);
+  const [journalDraft, setJournalDraft] = useState<JournalEntryDraft | null>(null);
+  const [savedJournalEntries, setSavedJournalEntries] = useState<StoredJournalEntry[]>([]);
+  const [savingJournalEntry, setSavingJournalEntry] = useState(false);
   const marketStatus = useMarketStatus();
   const groupedAlerts = groupAlertsByTicker(savedAlertRules);
 
@@ -294,6 +309,16 @@ function App() {
     setTriggeredAlerts(payload);
   }
 
+  async function loadJournalEntries() {
+    const response = await fetch(`/api/journal-entries/${DEMO_USER_ID}?limit=10`);
+    if (!response.ok) {
+      throw new Error("Failed to load journal entries.");
+    }
+
+    const payload = (await response.json()) as StoredJournalEntry[];
+    setSavedJournalEntries(payload);
+  }
+
   async function refresh() {
     setError(null);
     setLoading(true);
@@ -304,6 +329,7 @@ function App() {
         loadDrafts(),
         loadAlertRules(),
         loadTriggeredAlerts(),
+        loadJournalEntries(),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard refresh failed.");
@@ -416,6 +442,33 @@ function App() {
       setError(err instanceof Error ? err.message : "Failed to create target and stop alerts.");
     } finally {
       setSavingAlertRule(false);
+    }
+  }
+
+  async function persistJournalEntry() {
+    if (!journalDraft) {
+      return;
+    }
+
+    setSavingJournalEntry(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/journal-entries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: DEMO_USER_ID,
+          entry: journalDraft,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to save journal entry.");
+      }
+      await loadJournalEntries();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save journal entry.");
+    } finally {
+      setSavingJournalEntry(false);
     }
   }
 
@@ -711,6 +764,12 @@ function App() {
                 >
                   Open Alert Rule
                 </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => setJournalDraft(buildJournalDraft(selected))}
+                >
+                  Open Journal
+                </button>
               </div>
 
               <p className="detail-copy">
@@ -820,6 +879,30 @@ function App() {
                         <span>{alert.payload.message}</span>
                         <span className="triggered-alert-time">
                           {new Date(alert.triggered_at).toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="saved-drafts-panel">
+                <p className="eyebrow">Recent Journal Entries</p>
+                {savedJournalEntries.length === 0 ? (
+                  <p className="draft-empty-state">No journal entries yet.</p>
+                ) : (
+                  <div className="saved-drafts-list">
+                    {savedJournalEntries.slice(0, 5).map((entry) => (
+                      <div key={entry.entry_id} className="saved-draft-item">
+                        <div className="triggered-alert-header">
+                          <strong>{entry.ticker}</strong>
+                          <span className="triggered-alert-badge">{entry.payload.stage}</span>
+                        </div>
+                        <span>{entry.payload.thesis}</span>
+                        {entry.payload.review ? <span>{entry.payload.review}</span> : null}
+                        {entry.payload.outcome ? <span>{entry.payload.outcome}</span> : null}
+                        <span className="triggered-alert-time">
+                          {new Date(entry.updated_at).toLocaleString()}
                         </span>
                       </div>
                     ))}
@@ -1094,6 +1177,94 @@ function App() {
                 disabled={savingAlertRule}
               >
                 {savingAlertRule ? "Saving..." : "Save Alert Rule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {journalDraft ? (
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setJournalDraft(null);
+            }
+          }}
+        >
+          <div className="modal-card trade-plan-modal">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Trade Journal</p>
+                <h2>{journalDraft.ticker}</h2>
+                <p className="detail-name">
+                  Record the current thesis, review notes, and outcome so the dashboard becomes a feedback loop.
+                </p>
+              </div>
+              <button className="modal-close-button" onClick={() => setJournalDraft(null)}>
+                Close
+              </button>
+            </div>
+
+            <div className="trade-plan-grid">
+              <label>
+                Stage
+                <select
+                  value={journalDraft.stage}
+                  onChange={(event) =>
+                    setJournalDraft((current) =>
+                      current ? { ...current, stage: event.target.value } : current,
+                    )
+                  }
+                >
+                  <option value="monitoring">Monitoring</option>
+                  <option value="entered">Entered</option>
+                  <option value="managed">Managed</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </label>
+              <label className="trade-plan-wide">
+                Thesis
+                <textarea
+                  value={journalDraft.thesis}
+                  onChange={(event) =>
+                    setJournalDraft((current) =>
+                      current ? { ...current, thesis: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label className="trade-plan-wide">
+                Review
+                <textarea
+                  value={journalDraft.review}
+                  onChange={(event) =>
+                    setJournalDraft((current) =>
+                      current ? { ...current, review: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label className="trade-plan-wide">
+                Outcome
+                <textarea
+                  value={journalDraft.outcome}
+                  onChange={(event) =>
+                    setJournalDraft((current) =>
+                      current ? { ...current, outcome: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="trade-plan-actions">
+              <button
+                className="refresh-button"
+                onClick={() => void persistJournalEntry()}
+                disabled={savingJournalEntry}
+              >
+                {savingJournalEntry ? "Saving..." : "Save Journal Entry"}
               </button>
             </div>
           </div>

@@ -360,5 +360,11 @@ class DashboardState:
     def delete_alert_rule(self, user_id: str, rule_id: str) -> bool:
         return self._store.delete_alert_rule(user_id, rule_id)
 
+    def save_journal_entry(self, user_id: str, payload: dict, updated_at: str) -> None:
+        self._store.save_journal_entry(user_id, payload, updated_at)
+
+    def list_journal_entries(self, user_id: str, limit: int = 12) -> list[dict]:
+        return self._store.list_journal_entries(user_id, limit=limit)
+
 
 __all__ = ["DashboardState"]

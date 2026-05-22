@@ -96,6 +96,26 @@ class StoredTriggeredAlert(BaseModel):
     payload: TriggeredAlertPayload
 
 
+class JournalEntryPayload(BaseModel):
+    ticker: str
+    stage: str
+    thesis: str
+    review: str
+    outcome: str
+
+
+class SaveJournalEntryRequest(BaseModel):
+    user_id: str
+    entry: JournalEntryPayload
+
+
+class StoredJournalEntry(BaseModel):
+    entry_id: str
+    ticker: str
+    updated_at: str
+    payload: JournalEntryPayload
+
+
 class IndexQuote(BaseModel):
     ticker: str
     label: str

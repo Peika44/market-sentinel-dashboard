@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
 
@@ -5,9 +6,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import register_routes
-from app.core import RedisCache, settings
-from app.infra import Notifier, SQLiteStore
-from app.services import AlertEngine, DashboardState, consume_market_events
+from app.core.cache import RedisCache
+from app.core.config import settings
+from app.infra.notifier import Notifier
+from app.infra.storage import SQLiteStore
+from app.services.alerts import AlertEngine
+from app.services.dashboard import DashboardState
+from app.services.streaming import consume_market_events
 from app.ws import WebSocketHub
 
 logger = logging.getLogger("market_sentinel_backend")

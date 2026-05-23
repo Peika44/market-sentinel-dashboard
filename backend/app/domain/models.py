@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _VALID_CONDITIONS = {
     "urgency_above",
@@ -192,6 +192,53 @@ class StoredTickerNote(BaseModel):
     ticker: str
     updated_at: str
     payload: TickerNotePayload
+
+
+class UrgencySettingsPayload(BaseModel):
+    priceWeightPct: float = 65.0
+    sentimentWeightPct: float = 35.0
+    priceMoveScale: float = 5.0
+    lowThreshold: float = 40.0
+    highThreshold: float = 70.0
+
+    @field_validator("priceWeightPct", "sentimentWeightPct")
+    @classmethod
+    def weights_must_be_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("Weights must be zero or greater.")
+        return v
+
+    @field_validator("priceMoveScale")
+    @classmethod
+    def scale_must_be_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Price move scale must be greater than 0.")
+        return v
+
+    @field_validator("lowThreshold", "highThreshold")
+    @classmethod
+    def thresholds_must_be_in_range(cls, v: float) -> float:
+        if v < 0 or v > 100:
+            raise ValueError("Urgency thresholds must be between 0 and 100.")
+        return v
+
+    @model_validator(mode="after")
+    def validate_formula(self) -> "UrgencySettingsPayload":
+        if self.priceWeightPct + self.sentimentWeightPct <= 0:
+            raise ValueError("At least one urgency weight must be greater than 0.")
+        if self.highThreshold <= self.lowThreshold:
+            raise ValueError("High threshold must be greater than low threshold.")
+        return self
+
+
+class SaveUrgencySettingsRequest(BaseModel):
+    user_id: str
+    settings: UrgencySettingsPayload
+
+
+class StoredUrgencySettings(BaseModel):
+    updated_at: str
+    payload: UrgencySettingsPayload
 
 
 class IndexQuote(BaseModel):

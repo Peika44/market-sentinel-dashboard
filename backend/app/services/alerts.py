@@ -7,6 +7,7 @@ from app.core.cache import RedisCache
 from app.domain.models import AlertRulePayload, MarketEvent
 from app.infra.notifier import Notifier
 from app.infra.storage import SQLiteStore
+from app.market import sentiment_score_from_history
 from app.services.dashboard import DashboardState
 
 logger = logging.getLogger("market_sentinel_alerts")
@@ -45,7 +46,12 @@ class AlertEngine:
             message = ""
 
             if payload.condition == "urgency_above":
-                urgency = self._compute_urgency_proxy(event.change_pct)
+                sentiment_score = sentiment_score_from_history(previous_history)
+                urgency = self._state.compute_urgency(
+                    self._state.load_urgency_settings(user_id),
+                    event.change_pct,
+                    sentiment_score,
+                )
                 if urgency >= threshold:
                     triggered_value = urgency
                     message = (
@@ -156,10 +162,5 @@ class AlertEngine:
             return float(value)
         except (TypeError, ValueError):
             return None
-
-    @staticmethod
-    def _compute_urgency_proxy(change_pct: float) -> float:
-        return min(abs(change_pct) * 5.0, 100.0)
-
 
 __all__ = ["AlertEngine"]

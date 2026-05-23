@@ -11,12 +11,14 @@ import type {
   StoredAlertRule,
   StoredJournalEntry,
   StoredTickerNote,
+  StoredUrgencySettings,
   StockCard,
   StoredTradePlanDraft,
   StoredTriggeredAlert,
   TickerNoteDraft,
   TickerValidationResult,
   TradePlanDraft,
+  UrgencySettingsDraft,
 } from "./types";
 import { StockChartModal } from "./components/StockChartModal";
 import { Sparkline, UrgencyBar } from "./components/Sparkline";
@@ -24,6 +26,7 @@ import { TradePlanModal } from "./components/TradePlanModal";
 import { AlertRuleModal } from "./components/AlertRuleModal";
 import { JournalModal } from "./components/JournalModal";
 import { DetailPanel } from "./components/DetailPanel";
+import { UrgencySettingsModal } from "./components/UrgencySettingsModal";
 import {
   formatAlertCondition,
   formatChangePct,
@@ -36,10 +39,24 @@ const DEMO_USER_ID = "demo-user";
 const OVERVIEW_TICKERS = new Set(["SPY", "QQQ", "IWM"]);
 const ALERTS_PAGE = 5;
 const JOURNAL_PAGE = 5;
+const DEFAULT_URGENCY_SETTINGS: UrgencySettingsDraft = {
+  priceWeightPct: 65,
+  sentimentWeightPct: 35,
+  priceMoveScale: 5,
+  lowThreshold: 40,
+  highThreshold: 70,
+};
 
-function computeUrgency(changePct: number, sentimentScore: number): number {
-  const priceComponent = Math.min(Math.abs(changePct) * 5, 100) * 0.65;
-  const sentimentComponent = (1 - sentimentScore) * 100 * 0.35;
+function computeUrgency(
+  settings: UrgencySettingsDraft,
+  changePct: number,
+  sentimentScore: number,
+): number {
+  const totalWeight = settings.priceWeightPct + settings.sentimentWeightPct || 1;
+  const priceWeight = settings.priceWeightPct / totalWeight;
+  const sentimentWeight = settings.sentimentWeightPct / totalWeight;
+  const priceComponent = Math.min(Math.abs(changePct) * settings.priceMoveScale, 100) * priceWeight;
+  const sentimentComponent = (1 - sentimentScore) * 100 * sentimentWeight;
   return Math.min(priceComponent + sentimentComponent, 100);
 }
 
@@ -47,7 +64,11 @@ function sortByUrgency(stocks: StockCard[]): StockCard[] {
   return [...stocks].sort((left, right) => right.urgency_score - left.urgency_score);
 }
 
-function buildOverviewPreview(quote: IndexQuote, history: number[]): StockCard {
+function buildOverviewPreview(
+  urgencySettings: UrgencySettingsDraft,
+  quote: IndexQuote,
+  history: number[],
+): StockCard {
   return {
     ticker: quote.ticker,
     display_name: quote.label,
@@ -60,7 +81,7 @@ function buildOverviewPreview(quote: IndexQuote, history: number[]): StockCard {
     data_feed: "Overview",
     sentiment_score: 0.5,
     sentiment_label: "Neutral",
-    urgency_score: computeUrgency(Math.abs(quote.change_pct), 0.5),
+    urgency_score: computeUrgency(urgencySettings, Math.abs(quote.change_pct), 0.5),
     history,
   };
 }
@@ -250,6 +271,9 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [showChart, setShowChart] = useState(false);
+  const [showUrgencySettings, setShowUrgencySettings] = useState(false);
+  const [urgencySettings, setUrgencySettings] = useState<UrgencySettingsDraft>(DEFAULT_URGENCY_SETTINGS);
+  const [savingUrgencySettings, setSavingUrgencySettings] = useState(false);
   const [tradePlanDraft, setTradePlanDraft] = useState<TradePlanDraft | null>(null);
   const [retryingBootstrap, setRetryingBootstrap] = useState(false);
   const [savedDrafts, setSavedDrafts] = useState<StoredTradePlanDraft[]>([]);
@@ -302,6 +326,13 @@ function App() {
     const response = await fetch("/health");
     if (!response.ok) throw new Error("Failed to load backend health.");
     setHealth((await response.json()) as HealthResponse);
+  }
+
+  async function loadUrgencySettings() {
+    const response = await fetch(`/api/urgency-settings/${DEMO_USER_ID}`);
+    if (!response.ok) throw new Error("Failed to load urgency settings.");
+    const payload = (await response.json()) as StoredUrgencySettings;
+    setUrgencySettings(payload.payload);
   }
 
   async function loadDrafts() {
@@ -389,6 +420,7 @@ function App() {
     try {
       await Promise.all([
         loadHealth(),
+        loadUrgencySettings(),
         loadDashboard(),
         loadOverview(),
         loadDrafts(),
@@ -644,6 +676,25 @@ function App() {
     }
   }
 
+  async function persistUrgencySettings() {
+    setSavingUrgencySettings(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/urgency-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, settings: urgencySettings }),
+      });
+      if (!response.ok) throw new Error("Failed to save urgency settings.");
+      await refresh();
+      setShowUrgencySettings(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save urgency settings.");
+    } finally {
+      setSavingUrgencySettings(false);
+    }
+  }
+
   useEffect(() => {
     let destroyed = false;
     let retryDelay = 1_000;
@@ -702,7 +753,7 @@ function App() {
                 data_status: "live",
                 data_status_message: `Live stream via ${stock.data_feed ?? "market feed"}.`,
                 history,
-                urgency_score: computeUrgency(payload.change_pct, stock.sentiment_score),
+                urgency_score: computeUrgency(urgencySettings, payload.change_pct, stock.sentiment_score),
               };
             }),
           ),
@@ -715,7 +766,7 @@ function App() {
   }, []);
 
   const overviewSelections = indices.map((quote) =>
-    buildOverviewPreview(quote, indexHistory[quote.ticker] ?? [quote.current_price]),
+    buildOverviewPreview(urgencySettings, quote, indexHistory[quote.ticker] ?? [quote.current_price]),
   );
   const selected =
     [...stocks, ...overviewSelections].find((stock) => stock.ticker === selectedSymbol) ??
@@ -828,6 +879,9 @@ function App() {
         </div>
         <button className="refresh-button" onClick={refresh} disabled={loading}>
           {loading ? "Refreshing…" : "Refresh"}
+        </button>
+        <button className="ghost-button" onClick={() => setShowUrgencySettings(true)}>
+          Urgency Settings
         </button>
       </section>
 
@@ -1115,6 +1169,16 @@ function App() {
           onClose={() => setJournalDraft(null)}
           onSave={() => void persistJournalEntry()}
           savingJournalEntry={savingJournalEntry}
+        />
+      ) : null}
+
+      {showUrgencySettings ? (
+        <UrgencySettingsModal
+          draft={urgencySettings}
+          onChange={(next) => setUrgencySettings(next)}
+          onClose={() => setShowUrgencySettings(false)}
+          onSave={() => void persistUrgencySettings()}
+          saving={savingUrgencySettings}
         />
       ) : null}
     </div>

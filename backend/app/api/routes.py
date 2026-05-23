@@ -8,12 +8,14 @@ from app.domain.models import (
     SaveJournalEntryRequest,
     SaveAlertRuleRequest,
     SaveTickerNoteRequest,
+    SaveUrgencySettingsRequest,
     SaveTradePlanDraftRequest,
     StoredAlertRule,
     StoredJournalEntry,
     StoredTickerNote,
     StoredTriggeredAlert,
     StoredTradePlanDraft,
+    StoredUrgencySettings,
     TickerValidationResult,
     WatchlistMutation,
 )
@@ -208,6 +210,24 @@ def register_routes(app: FastAPI) -> None:
         app.state.dashboard_state.save_ticker_note(
             payload.user_id,
             payload.note.model_dump(),
+            updated_at,
+        )
+        return {"ok": True, "updated_at": updated_at}
+
+    @app.get("/api/urgency-settings/{user_id}", response_model=StoredUrgencySettings)
+    async def get_urgency_settings(user_id: str):
+        current = app.state.dashboard_state.load_urgency_settings(user_id)
+        return StoredUrgencySettings(
+            updated_at="",
+            payload=current,
+        )
+
+    @app.post("/api/urgency-settings")
+    async def save_urgency_settings(payload: SaveUrgencySettingsRequest):
+        updated_at = datetime.now(timezone.utc).isoformat()
+        app.state.dashboard_state.save_urgency_settings(
+            payload.user_id,
+            payload.settings.model_dump(),
             updated_at,
         )
         return {"ok": True, "updated_at": updated_at}

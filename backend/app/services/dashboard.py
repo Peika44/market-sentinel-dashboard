@@ -18,6 +18,7 @@ from app.domain.models import (
     MarketEvent,
     StockCard,
     TickerValidationResult,
+    UrgencySettingsPayload,
 )
 from app.infra.storage import SQLiteStore
 from app.market import (
@@ -37,6 +38,7 @@ SUPPORTED_WATCHLIST_TICKERS = frozenset(SEED_QUOTES.keys())
 TICKER_PATTERN = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 ACTIVE_TICKERS_CACHE_KEY = "market_feed:active_tickers"
 WAITING_TIMEOUT_SECONDS = 30
+DEFAULT_URGENCY_SETTINGS = UrgencySettingsPayload()
 
 RANGE_POINTS = {
     "5m": 12,
@@ -80,6 +82,7 @@ class DashboardState:
         self.watchlists: dict[str, set[str]] = {
             settings.default_user_id: set(persisted or DEFAULT_WATCHLIST)
         }
+        self.urgency_settings: dict[str, UrgencySettingsPayload] = {}
         self.display_names: dict[str, str] = dict(DISPLAY_NAMES)
         self.latest_quotes: dict[str, MarketEvent] = {}
         self.quote_sources: dict[str, str] = {}
@@ -127,6 +130,12 @@ class DashboardState:
 
         for ticker in self.watchlists.get(settings.default_user_id, set()):
             self.pending_since.setdefault(ticker.upper(), datetime.now(timezone.utc))
+
+        stored_urgency_settings = self._store.load_urgency_settings(settings.default_user_id)
+        if stored_urgency_settings:
+            self.urgency_settings[settings.default_user_id] = UrgencySettingsPayload.model_validate(
+                stored_urgency_settings["payload"]
+            )
 
         self._sync_active_tickers()
 
@@ -302,6 +311,7 @@ class DashboardState:
     def build_snapshot(self, user_id: str) -> DashboardSnapshot:
         tickers = sorted(self.watchlists.setdefault(user_id, set(DEFAULT_WATCHLIST)))
         cards: list[StockCard] = []
+        urgency_settings = self.load_urgency_settings(user_id)
 
         for ticker in tickers:
             quote = self.latest_quotes.get(ticker)
@@ -323,7 +333,8 @@ class DashboardState:
                     data_feed=self._data_feed_label(),
                     sentiment_score=sentiment_score,
                     sentiment_label=sentiment_label_for(sentiment_score),
-                    urgency_score=compute_urgency(
+                    urgency_score=self.compute_urgency(
+                        urgency_settings,
                         quote.change_pct,
                         sentiment_score,
                     ) if quote and data_status != "waiting" else 0.0,
@@ -915,6 +926,27 @@ class DashboardState:
 
     def list_ticker_notes(self, user_id: str) -> list[dict]:
         return self._store.list_ticker_notes(user_id)
+
+    def save_urgency_settings(self, user_id: str, payload: dict, updated_at: str) -> None:
+        settings_payload = UrgencySettingsPayload.model_validate(payload)
+        self.urgency_settings[user_id] = settings_payload
+        self._store.save_urgency_settings(user_id, settings_payload.model_dump(), updated_at)
+
+    def load_urgency_settings(self, user_id: str) -> UrgencySettingsPayload:
+        return self.urgency_settings.get(user_id, DEFAULT_URGENCY_SETTINGS)
+
+    @staticmethod
+    def compute_urgency(
+        urgency_settings: UrgencySettingsPayload,
+        change_pct: float,
+        sentiment_score: float,
+    ) -> float:
+        total_weight = urgency_settings.priceWeightPct + urgency_settings.sentimentWeightPct
+        normalized_price_weight = urgency_settings.priceWeightPct / total_weight
+        normalized_sentiment_weight = urgency_settings.sentimentWeightPct / total_weight
+        price_component = min(abs(change_pct) * urgency_settings.priceMoveScale, 100.0) * normalized_price_weight
+        sentiment_component = (1.0 - sentiment_score) * 100.0 * normalized_sentiment_weight
+        return round(min(price_component + sentiment_component, 100.0), 2)
 
     def flush_history_to_db(self) -> None:
         """Persist all in-memory price deques to SQLite. Safe to call from any thread."""

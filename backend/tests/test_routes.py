@@ -63,6 +63,16 @@ class FakeDashboardState:
                 "strategyTag": "",
             },
         }
+        self.urgency_settings = {
+            "updated_at": "",
+            "payload": {
+                "priceWeightPct": 65.0,
+                "sentimentWeightPct": 35.0,
+                "priceMoveScale": 5.0,
+                "lowThreshold": 40.0,
+                "highThreshold": 70.0,
+            },
+        }
 
     async def validate_ticker(self, ticker: str) -> TickerValidationResult:
         self.calls.append(("validate", ticker))
@@ -105,6 +115,17 @@ class FakeDashboardState:
         self.calls.append(("save-note", f"{user_id}:{payload['ticker']}"))
         self.note = {
             "ticker": payload["ticker"].upper(),
+            "updated_at": updated_at,
+            "payload": payload,
+        }
+
+    def load_urgency_settings(self, user_id: str):
+        self.calls.append(("load-urgency", user_id))
+        return self.urgency_settings["payload"]
+
+    def save_urgency_settings(self, user_id: str, payload: dict, updated_at: str) -> None:
+        self.calls.append(("save-urgency", user_id))
+        self.urgency_settings = {
             "updated_at": updated_at,
             "payload": payload,
         }
@@ -370,6 +391,59 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(payload[0]["ticker"], "NVDA")
         self.assertEqual(payload[0]["payload"]["strategyTag"], "Breakout")
         self.assertEqual(state.calls, [("list-notes", "demo-user")])
+
+    def test_get_urgency_settings_returns_current_formula(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.get("/api/urgency-settings/demo-user")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["payload"]["priceWeightPct"], 65.0)
+        self.assertEqual(state.calls, [("load-urgency", "demo-user")])
+
+    def test_save_urgency_settings_persists_formula(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.post(
+            "/api/urgency-settings",
+            json={
+                "user_id": "demo-user",
+                "settings": {
+                    "priceWeightPct": 55,
+                    "sentimentWeightPct": 45,
+                    "priceMoveScale": 6,
+                    "lowThreshold": 35,
+                    "highThreshold": 75,
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.calls[0], ("save-urgency", "demo-user"))
+        self.assertEqual(state.urgency_settings["payload"]["highThreshold"], 75)
 
 
 if __name__ == "__main__":

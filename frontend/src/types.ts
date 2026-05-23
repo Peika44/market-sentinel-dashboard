@@ -148,3 +148,16 @@ export interface StoredTickerNote {
   updated_at: string;
   payload: TickerNoteDraft;
 }
+
+export interface UrgencySettingsDraft {
+  priceWeightPct: number;
+  sentimentWeightPct: number;
+  priceMoveScale: number;
+  lowThreshold: number;
+  highThreshold: number;
+}
+
+export interface StoredUrgencySettings {
+  updated_at: string;
+  payload: UrgencySettingsDraft;
+}

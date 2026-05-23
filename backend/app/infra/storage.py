@@ -77,6 +77,15 @@ class SQLiteStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS urgency_settings (
+                    user_id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS price_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
@@ -455,6 +464,36 @@ class SQLiteStore:
                     }
                 )
             return notes
+
+    def save_urgency_settings(self, user_id: str, payload: dict, updated_at: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO urgency_settings (user_id, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id)
+                DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                """,
+                (user_id, json.dumps(payload), updated_at),
+            )
+            conn.commit()
+
+    def load_urgency_settings(self, user_id: str) -> dict | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json, updated_at
+                FROM urgency_settings
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "updated_at": row["updated_at"],
+                "payload": json.loads(row["payload_json"]),
+            }
 
 
     def save_price_history_bulk(self, ticker: str, prices: list[float]) -> None:

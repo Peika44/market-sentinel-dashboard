@@ -176,6 +176,24 @@ class StoredJournalEntry(BaseModel):
     payload: JournalEntryPayload
 
 
+class TickerNotePayload(BaseModel):
+    ticker: str
+    thesis: str = ""
+    notes: str = ""
+    strategyTag: str = ""
+
+
+class SaveTickerNoteRequest(BaseModel):
+    user_id: str
+    note: TickerNotePayload
+
+
+class StoredTickerNote(BaseModel):
+    ticker: str
+    updated_at: str
+    payload: TickerNotePayload
+
+
 class IndexQuote(BaseModel):
     ticker: str
     label: str

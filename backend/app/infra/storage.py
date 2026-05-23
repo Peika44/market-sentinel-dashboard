@@ -66,6 +66,17 @@ class SQLiteStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS ticker_notes (
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, ticker)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS price_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
@@ -391,6 +402,37 @@ class SQLiteStore:
                     }
                 )
             return entries
+
+    def save_ticker_note(self, user_id: str, ticker: str, payload: dict, updated_at: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO ticker_notes (user_id, ticker, payload_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, ticker)
+                DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                """,
+                (user_id, ticker.upper(), json.dumps(payload), updated_at),
+            )
+            conn.commit()
+
+    def load_ticker_note(self, user_id: str, ticker: str) -> dict | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT ticker, payload_json, updated_at
+                FROM ticker_notes
+                WHERE user_id = ? AND ticker = ?
+                """,
+                (user_id, ticker.upper()),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "ticker": row["ticker"],
+                "updated_at": row["updated_at"],
+                "payload": json.loads(row["payload_json"]),
+            }
 
 
     def save_price_history_bulk(self, ticker: str, prices: list[float]) -> None:

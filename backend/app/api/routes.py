@@ -7,9 +7,11 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from app.domain.models import (
     SaveJournalEntryRequest,
     SaveAlertRuleRequest,
+    SaveTickerNoteRequest,
     SaveTradePlanDraftRequest,
     StoredAlertRule,
     StoredJournalEntry,
+    StoredTickerNote,
     StoredTriggeredAlert,
     StoredTradePlanDraft,
     TickerValidationResult,
@@ -164,6 +166,36 @@ def register_routes(app: FastAPI) -> None:
         app.state.dashboard_state.save_journal_entry(
             payload.user_id,
             payload.entry.model_dump(),
+            updated_at,
+        )
+        return {"ok": True, "updated_at": updated_at}
+
+    @app.get("/api/ticker-notes/{user_id}/{ticker}", response_model=StoredTickerNote)
+    async def get_ticker_note(user_id: str, ticker: str):
+        row = app.state.dashboard_state.load_ticker_note(user_id, ticker)
+        if row is None:
+            return StoredTickerNote(
+                ticker=ticker.upper(),
+                updated_at="",
+                payload={
+                    "ticker": ticker.upper(),
+                    "thesis": "",
+                    "notes": "",
+                    "strategyTag": "",
+                },
+            )
+        return StoredTickerNote(
+            ticker=row["ticker"],
+            updated_at=row["updated_at"],
+            payload=row["payload"],
+        )
+
+    @app.post("/api/ticker-notes")
+    async def save_ticker_note(payload: SaveTickerNoteRequest):
+        updated_at = datetime.now(timezone.utc).isoformat()
+        app.state.dashboard_state.save_ticker_note(
+            payload.user_id,
+            payload.note.model_dump(),
             updated_at,
         )
         return {"ok": True, "updated_at": updated_at}

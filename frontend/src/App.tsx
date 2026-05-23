@@ -10,9 +10,11 @@ import type {
   MarketOverviewResponse,
   StoredAlertRule,
   StoredJournalEntry,
+  StoredTickerNote,
   StockCard,
   StoredTradePlanDraft,
   StoredTriggeredAlert,
+  TickerNoteDraft,
   TickerValidationResult,
   TradePlanDraft,
 } from "./types";
@@ -238,6 +240,9 @@ function App() {
   const [journalDraft, setJournalDraft] = useState<JournalEntryDraft | null>(null);
   const [savedJournalEntries, setSavedJournalEntries] = useState<StoredJournalEntry[]>([]);
   const [savingJournalEntry, setSavingJournalEntry] = useState(false);
+  const [tickerNote, setTickerNote] = useState<StoredTickerNote | null>(null);
+  const [editingNote, setEditingNote] = useState<TickerNoteDraft | null>(null);
+  const [savingTickerNote, setSavingTickerNote] = useState(false);
   const [journalOffset, setJournalOffset] = useState(0);
   const [hasMoreJournal, setHasMoreJournal] = useState(false);
   const marketStatus = useMarketStatus();
@@ -337,6 +342,14 @@ function App() {
     setSavedJournalEntries((prev) => (offset === 0 ? page : [...prev, ...page]));
     setJournalOffset(offset);
     setHasMoreJournal(hasMore);
+  }
+
+  async function loadTickerNote(ticker: string) {
+    const response = await fetch(`/api/ticker-notes/${DEMO_USER_ID}/${ticker}`);
+    if (!response.ok) throw new Error("Failed to load ticker notes.");
+    const payload = (await response.json()) as StoredTickerNote;
+    setTickerNote(payload);
+    setEditingNote(payload.payload);
   }
 
   async function refresh() {
@@ -579,6 +592,25 @@ function App() {
     }
   }
 
+  async function persistTickerNote() {
+    if (!editingNote) return;
+    setSavingTickerNote(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/ticker-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, note: editingNote }),
+      });
+      if (!response.ok) throw new Error("Failed to save ticker notes.");
+      await loadTickerNote(editingNote.ticker);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save ticker notes.");
+    } finally {
+      setSavingTickerNote(false);
+    }
+  }
+
   useEffect(() => {
     let destroyed = false;
     let retryDelay = 1_000;
@@ -678,6 +710,35 @@ function App() {
 
     return () => window.clearTimeout(timer);
   }, [selected?.ticker, selected?.data_status]);
+
+  useEffect(() => {
+    if (!selected || OVERVIEW_TICKERS.has(selected.ticker)) {
+      setTickerNote(null);
+      setEditingNote(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/ticker-notes/${DEMO_USER_ID}/${selected.ticker}`);
+        if (!response.ok) throw new Error("Failed to load ticker notes.");
+        const payload = (await response.json()) as StoredTickerNote;
+        if (!cancelled) {
+          setTickerNote(payload);
+          setEditingNote(payload.payload);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load ticker notes.");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.ticker]);
 
   return (
     <div className="app-shell">
@@ -933,6 +994,9 @@ function App() {
             groupedAlerts={groupedAlerts}
             triggeredAlerts={triggeredAlerts}
             savedJournalEntries={savedJournalEntries}
+            tickerNote={tickerNote}
+            editingNote={editingNote}
+            savingTickerNote={savingTickerNote}
             hasMoreAlerts={hasMoreAlerts}
             hasMoreJournal={hasMoreJournal}
             onShowChart={() => setShowChart(true)}
@@ -941,6 +1005,8 @@ function App() {
             onJournal={() => selected && setJournalDraft(buildJournalDraft(selected))}
             onRetryBootstrap={() => selected && void retryBootstrap(selected.ticker)}
             retryingBootstrap={retryingBootstrap}
+            onTickerNoteChange={(next) => setEditingNote(next)}
+            onSaveTickerNote={() => void persistTickerNote()}
             onLoadDraft={(draft) => setTradePlanDraft(draft)}
             onEditAlertRule={(rule) =>
               setAlertRuleDraft({ ...rule.payload, ruleId: rule.rule_id })

@@ -53,6 +53,16 @@ class FakeDashboardState:
         self.snapshot = snapshot or build_snapshot()
         self.calls: list[tuple[str, str]] = []
         self.tracked_tickers: set[str] = {self.snapshot.stocks[0].ticker} if self.snapshot.stocks else set()
+        self.note = {
+            "ticker": "NFLX",
+            "updated_at": "",
+            "payload": {
+                "ticker": "NFLX",
+                "thesis": "",
+                "notes": "",
+                "strategyTag": "",
+            },
+        }
 
     async def validate_ticker(self, ticker: str) -> TickerValidationResult:
         self.calls.append(("validate", ticker))
@@ -80,6 +90,20 @@ class FakeDashboardState:
     def is_tracked(self, user_id: str, ticker: str) -> bool:
         self.calls.append(("tracked", f"{user_id}:{ticker}"))
         return ticker.upper() in self.tracked_tickers
+
+    def load_ticker_note(self, user_id: str, ticker: str):
+        self.calls.append(("load-note", f"{user_id}:{ticker}"))
+        if ticker.upper() != self.note["ticker"]:
+            return None
+        return self.note
+
+    def save_ticker_note(self, user_id: str, payload: dict, updated_at: str) -> None:
+        self.calls.append(("save-note", f"{user_id}:{payload['ticker']}"))
+        self.note = {
+            "ticker": payload["ticker"].upper(),
+            "updated_at": updated_at,
+            "payload": payload,
+        }
 
 
 class RouteTests(unittest.TestCase):
@@ -256,6 +280,59 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "Ticker is not on the watchlist.")
         self.assertEqual(state.calls, [("tracked", "demo-user:NFLX")])
+
+    def test_get_ticker_note_returns_empty_payload_when_missing(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.get("/api/ticker-notes/demo-user/AMD")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["ticker"], "AMD")
+        self.assertEqual(payload["payload"]["thesis"], "")
+        self.assertEqual(state.calls, [("load-note", "demo-user:AMD")])
+
+    def test_save_ticker_note_persists_payload(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.post(
+            "/api/ticker-notes",
+            json={
+                "user_id": "demo-user",
+                "note": {
+                    "ticker": "NFLX",
+                    "thesis": "Weekly breakout candidate",
+                    "notes": "Needs volume confirmation above prior high.",
+                    "strategyTag": "Breakout",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.calls[0][0], "save-note")
+        self.assertEqual(state.note["payload"]["strategyTag"], "Breakout")
 
 
 if __name__ == "__main__":

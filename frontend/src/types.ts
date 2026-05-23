@@ -135,3 +135,16 @@ export interface StoredJournalEntry {
   updated_at: string;
   payload: JournalEntryDraft;
 }
+
+export interface TickerNoteDraft {
+  ticker: string;
+  thesis: string;
+  notes: string;
+  strategyTag: string;
+}
+
+export interface StoredTickerNote {
+  ticker: string;
+  updated_at: string;
+  payload: TickerNoteDraft;
+}

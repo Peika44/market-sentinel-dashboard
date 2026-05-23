@@ -3,8 +3,10 @@ import type {
   StockCard,
   StoredAlertRule,
   StoredJournalEntry,
+  StoredTickerNote,
   StoredTriggeredAlert,
   StoredTradePlanDraft,
+  TickerNoteDraft,
   TradePlanDraft,
 } from "../types";
 import { formatChangePct, formatCurrency, formatAlertCondition } from "../utils/format";
@@ -16,6 +18,9 @@ interface DetailPanelProps {
   groupedAlerts: Array<{ ticker: string; rules: StoredAlertRule[] }>;
   triggeredAlerts: StoredTriggeredAlert[];
   savedJournalEntries: StoredJournalEntry[];
+  tickerNote: StoredTickerNote | null;
+  editingNote: TickerNoteDraft | null;
+  savingTickerNote: boolean;
   hasMoreAlerts: boolean;
   hasMoreJournal: boolean;
   onShowChart: () => void;
@@ -24,6 +29,8 @@ interface DetailPanelProps {
   onJournal: () => void;
   onRetryBootstrap: () => void;
   retryingBootstrap: boolean;
+  onTickerNoteChange: (next: TickerNoteDraft) => void;
+  onSaveTickerNote: () => void;
   onLoadDraft: (draft: TradePlanDraft) => void;
   onEditAlertRule: (rule: StoredAlertRule) => void;
   onToggleAlertRule: (ruleId: string, enabled: boolean) => void;
@@ -38,6 +45,9 @@ export function DetailPanel({
   groupedAlerts,
   triggeredAlerts,
   savedJournalEntries,
+  tickerNote,
+  editingNote,
+  savingTickerNote,
   hasMoreAlerts,
   hasMoreJournal,
   onShowChart,
@@ -46,6 +56,8 @@ export function DetailPanel({
   onJournal,
   onRetryBootstrap,
   retryingBootstrap,
+  onTickerNoteChange,
+  onSaveTickerNote,
   onLoadDraft,
   onEditAlertRule,
   onToggleAlertRule,
@@ -139,6 +151,58 @@ export function DetailPanel({
             {retryingBootstrap ? "Retrying…" : "Retry Bootstrap"}
           </button>
         ) : null}
+      </div>
+
+      <div className="saved-drafts-panel">
+        <p className="eyebrow">Ticker Notes</p>
+        {editingNote ? (
+          <div className="ticker-note-panel">
+            <label>
+              <span>Strategy Tag</span>
+              <input
+                value={editingNote.strategyTag}
+                onChange={(event) =>
+                  onTickerNoteChange({ ...editingNote, strategyTag: event.target.value })
+                }
+                placeholder="e.g. Breakout, Pullback, Swing"
+              />
+            </label>
+            <label>
+              <span>Thesis</span>
+              <textarea
+                value={editingNote.thesis}
+                onChange={(event) =>
+                  onTickerNoteChange({ ...editingNote, thesis: event.target.value })
+                }
+                placeholder="Why is this ticker on your board?"
+              />
+            </label>
+            <label>
+              <span>Notes</span>
+              <textarea
+                value={editingNote.notes}
+                onChange={(event) =>
+                  onTickerNoteChange({ ...editingNote, notes: event.target.value })
+                }
+                placeholder="Catalysts, risk factors, levels, or reminders"
+              />
+            </label>
+            <div className="inline-action-row">
+              <button className="ghost-button" onClick={onSaveTickerNote} disabled={savingTickerNote}>
+                {savingTickerNote ? "Saving…" : "Save Notes"}
+              </button>
+              {tickerNote?.updated_at ? (
+                <span className="triggered-alert-time">
+                  Updated {new Date(tickerNote.updated_at).toLocaleString()}
+                </span>
+              ) : (
+                <span className="triggered-alert-time">No saved note yet.</span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <p className="draft-empty-state">Select a ticker to load notes.</p>
+        )}
       </div>
 
       <div className="saved-drafts-panel">

@@ -689,6 +689,31 @@ textarea {
   padding-top: 18px;
 }
 
+.ticker-note-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.ticker-note-panel label {
+  display: grid;
+  gap: 8px;
+  color: #dbe7f7;
+  font-size: 0.92rem;
+}
+
+.ticker-note-panel input,
+.ticker-note-panel textarea {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f2f5f9;
+  padding: 12px 14px;
+}
+
+.ticker-note-panel textarea {
+  min-height: 110px;
+}
+
 .draft-empty-state {
   color: #aeb8c7;
   margin: 0;

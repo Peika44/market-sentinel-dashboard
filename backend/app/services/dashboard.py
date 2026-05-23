@@ -906,6 +906,13 @@ class DashboardState:
     def list_journal_entries(self, user_id: str, limit: int = 12, offset: int = 0) -> list[dict]:
         return self._store.list_journal_entries(user_id, limit=limit, offset=offset)
 
+    def save_ticker_note(self, user_id: str, payload: dict, updated_at: str) -> None:
+        ticker = str(payload["ticker"]).upper()
+        self._store.save_ticker_note(user_id, ticker, payload, updated_at)
+
+    def load_ticker_note(self, user_id: str, ticker: str) -> dict | None:
+        return self._store.load_ticker_note(user_id, ticker)
+
     def flush_history_to_db(self) -> None:
         """Persist all in-memory price deques to SQLite. Safe to call from any thread."""
         for ticker, hist in list(self.price_history.items()):

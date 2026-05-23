@@ -354,6 +354,32 @@ textarea {
 }
 
 .card-grid {
+  gap: 16px;
+}
+
+.strategy-group {
+  display: grid;
+  gap: 14px;
+}
+
+.strategy-group-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-end;
+}
+
+.strategy-group-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.strategy-count {
+  color: #b6c1cf;
+  font-size: 0.84rem;
+}
+
+.strategy-group-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
@@ -958,6 +984,10 @@ textarea {
   }
 
   .card-grid {
+    gap: 20px;
+  }
+
+  .strategy-group-grid {
     grid-template-columns: 1fr;
   }
 }

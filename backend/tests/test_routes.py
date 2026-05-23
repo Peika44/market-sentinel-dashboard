@@ -97,6 +97,10 @@ class FakeDashboardState:
             return None
         return self.note
 
+    def list_ticker_notes(self, user_id: str):
+        self.calls.append(("list-notes", user_id))
+        return [self.note]
+
     def save_ticker_note(self, user_id: str, payload: dict, updated_at: str) -> None:
         self.calls.append(("save-note", f"{user_id}:{payload['ticker']}"))
         self.note = {
@@ -333,6 +337,39 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(state.calls[0][0], "save-note")
         self.assertEqual(state.note["payload"]["strategyTag"], "Breakout")
+
+    def test_list_ticker_notes_returns_saved_notes(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        state.note = {
+            "ticker": "NVDA",
+            "updated_at": "2026-05-23T23:42:00Z",
+            "payload": {
+                "ticker": "NVDA",
+                "thesis": "AI leadership",
+                "notes": "Watch for continuation above range highs.",
+                "strategyTag": "Breakout",
+            },
+        }
+        client = self.make_client(state)
+
+        response = client.get("/api/ticker-notes/demo-user")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["ticker"], "NVDA")
+        self.assertEqual(payload[0]["payload"]["strategyTag"], "Breakout")
+        self.assertEqual(state.calls, [("list-notes", "demo-user")])
 
 
 if __name__ == "__main__":

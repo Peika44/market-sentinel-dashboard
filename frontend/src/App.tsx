@@ -213,6 +213,30 @@ function groupAlertsByTicker(rules: StoredAlertRule[]): Array<{
   }));
 }
 
+function groupStocksByStrategy(
+  stocks: StockCard[],
+  notes: StoredTickerNote[],
+): Array<{ name: string; stocks: StockCard[] }> {
+  const strategyByTicker = new Map(
+    notes.map((note) => [note.ticker, note.payload.strategyTag.trim() || "Unsorted"]),
+  );
+  const groups = new Map<string, StockCard[]>();
+
+  for (const stock of stocks) {
+    const groupName = strategyByTicker.get(stock.ticker) ?? "Unsorted";
+    const existing = groups.get(groupName) ?? [];
+    existing.push(stock);
+    groups.set(groupName, existing);
+  }
+
+  return Array.from(groups.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, groupedStocks]) => ({
+      name,
+      stocks: groupedStocks,
+    }));
+}
+
 function App() {
   const [stocks, setStocks] = useState<StockCard[]>([]);
   const [indices, setIndices] = useState<IndexQuote[]>([]);
@@ -243,6 +267,7 @@ function App() {
   const [tickerNote, setTickerNote] = useState<StoredTickerNote | null>(null);
   const [editingNote, setEditingNote] = useState<TickerNoteDraft | null>(null);
   const [savingTickerNote, setSavingTickerNote] = useState(false);
+  const [tickerNotes, setTickerNotes] = useState<StoredTickerNote[]>([]);
   const [journalOffset, setJournalOffset] = useState(0);
   const [hasMoreJournal, setHasMoreJournal] = useState(false);
   const marketStatus = useMarketStatus();
@@ -352,6 +377,12 @@ function App() {
     setEditingNote(payload.payload);
   }
 
+  async function loadTickerNotes() {
+    const response = await fetch(`/api/ticker-notes/${DEMO_USER_ID}`);
+    if (!response.ok) throw new Error("Failed to load ticker notes.");
+    setTickerNotes((await response.json()) as StoredTickerNote[]);
+  }
+
   async function refresh() {
     setError(null);
     setLoading(true);
@@ -364,6 +395,7 @@ function App() {
         loadAlertRules(),
         loadTriggeredAlerts(),
         loadJournalEntries(),
+        loadTickerNotes(),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard refresh failed.");
@@ -604,6 +636,7 @@ function App() {
       });
       if (!response.ok) throw new Error("Failed to save ticker notes.");
       await loadTickerNote(editingNote.ticker);
+      await loadTickerNotes();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save ticker notes.");
     } finally {
@@ -698,6 +731,7 @@ function App() {
     : "Idle";
   const providerLabel = health?.provider?.toUpperCase() ?? "UNKNOWN";
   const feedLabel = health?.feed?.toUpperCase() ?? "N/A";
+  const strategyGroups = groupStocksByStrategy(stocks, tickerNotes);
 
   useEffect(() => {
     if (!selected || selected.data_status === "live") {
@@ -852,138 +886,151 @@ function App() {
 
       <section className="content-grid">
         <div className="card-grid">
-          {stocks.map((stock) => (
-            <article
-              key={stock.ticker}
-              className={`stock-card ${selected?.ticker === stock.ticker ? "selected" : ""} ${
-                stock.data_status === "waiting"
-                  ? "waiting"
-                  : stock.data_status === "delayed"
-                    ? "delayed"
-                    : ""
-              }`}
-              onClick={() => setSelectedSymbol(stock.ticker)}
-            >
-              <div className="card-header">
+          {strategyGroups.map((group) => (
+            <section key={group.name} className="strategy-group">
+              <div className="strategy-group-header">
                 <div>
-                  <span className="ticker">{stock.ticker}</span>
-                  <p>{stock.display_name}</p>
+                  <p className="eyebrow">Strategy Group</p>
+                  <h3>{group.name}</h3>
                 </div>
-                <button
-                  className="remove-button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void removeTicker(stock.ticker);
-                  }}
-                >
-                  Remove
-                </button>
+                <span className="strategy-count">{group.stocks.length} symbols</span>
               </div>
+              <div className="strategy-group-grid">
+                {group.stocks.map((stock) => (
+                  <article
+                    key={stock.ticker}
+                    className={`stock-card ${selected?.ticker === stock.ticker ? "selected" : ""} ${
+                      stock.data_status === "waiting"
+                        ? "waiting"
+                        : stock.data_status === "delayed"
+                          ? "delayed"
+                          : ""
+                    }`}
+                    onClick={() => setSelectedSymbol(stock.ticker)}
+                  >
+                    <div className="card-header">
+                      <div>
+                        <span className="ticker">{stock.ticker}</span>
+                        <p>{stock.display_name}</p>
+                      </div>
+                      <button
+                        className="remove-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void removeTicker(stock.ticker);
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
 
-              <div className="card-price-row">
-                <strong className={stock.data_status === "waiting" ? "pending-price" : ""}>
-                  {stock.data_status === "waiting" && !hasUsablePrice(stock)
-                    ? "Waiting for data"
-                    : formatCurrency(stock.current_price)}
-                </strong>
-                <span
-                  className={
-                    stock.data_status === "live"
-                      ? stock.change_pct != null && stock.change_pct >= 0
-                        ? "change-up"
-                        : "change-down"
-                      : stock.data_status === "delayed"
-                        ? "change-delayed"
-                        : "change-pending"
-                  }
-                >
-                  {stock.data_status === "live" || stock.data_status === "delayed"
-                    ? formatChangePct(stock.change_pct)
-                    : "Subscribed"}
-                </span>
+                    <div className="card-price-row">
+                      <strong className={stock.data_status === "waiting" ? "pending-price" : ""}>
+                        {stock.data_status === "waiting" && !hasUsablePrice(stock)
+                          ? "Waiting for data"
+                          : formatCurrency(stock.current_price)}
+                      </strong>
+                      <span
+                        className={
+                          stock.data_status === "live"
+                            ? stock.change_pct != null && stock.change_pct >= 0
+                              ? "change-up"
+                              : "change-down"
+                            : stock.data_status === "delayed"
+                              ? "change-delayed"
+                              : "change-pending"
+                        }
+                      >
+                        {stock.data_status === "live" || stock.data_status === "delayed"
+                          ? formatChangePct(stock.change_pct)
+                          : "Subscribed"}
+                      </span>
+                    </div>
+
+                    <div className="badge-row">
+                      {stock.data_status === "live" || stock.data_status === "delayed" ? (
+                        <>
+                          <span className="sentiment-badge">{stock.sentiment_label}</span>
+                          <span
+                            className={`urgency-badge urgency-${stock.urgency_score >= 70 ? "high" : stock.urgency_score >= 40 ? "med" : "low"}`}
+                          >
+                            {stock.urgency_score.toFixed(0)}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="data-status-badge waiting">Waiting for market data</span>
+                      )}
+                      {stock.data_status === "delayed" ? (
+                        <span className="data-status-badge delayed">Delayed / limited feed</span>
+                      ) : null}
+                    </div>
+
+                    {stock.data_status !== "waiting" ? <UrgencyBar score={stock.urgency_score} /> : null}
+
+                    {stock.volume > 0 && (
+                      <div className="vol-row">
+                        <span className="vol-label">Vol</span>
+                        <span className="vol-value">{formatVolume(stock.volume)}</span>
+                      </div>
+                    )}
+
+                    <div className="freshness-row">
+                      {(() => {
+                        const freshness = getFreshnessLabel(stock.last_updated, stock.data_status);
+                        return (
+                          <span className={`freshness-pill ${freshness.stale ? "stale" : "fresh"}`}>
+                            {freshness.label}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    {stock.data_status_message ? (
+                      <div className="data-status-copy">{stock.data_status_message}</div>
+                    ) : null}
+
+                    <div className="mini-chart">
+                      <Sparkline points={stock.history} />
+                    </div>
+
+                    <div className="card-actions">
+                      <button
+                        className="ghost-button"
+                        disabled={stock.history.length === 0}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedSymbol(stock.ticker);
+                          setShowChart(true);
+                        }}
+                      >
+                        Open Chart
+                      </button>
+                      <button
+                        className="ghost-button"
+                        disabled={!hasUsablePrice(stock)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedSymbol(stock.ticker);
+                          setTradePlanDraft(buildTradePlanDraft(stock));
+                        }}
+                      >
+                        Seed Trade Plan
+                      </button>
+                      <button
+                        className="ghost-button"
+                        disabled={!hasUsablePrice(stock)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedSymbol(stock.ticker);
+                          setAlertRuleDraft(buildAlertRuleDraft(stock));
+                        }}
+                      >
+                        Create Alert
+                      </button>
+                    </div>
+                  </article>
+                ))}
               </div>
-
-              <div className="badge-row">
-                {stock.data_status === "live" || stock.data_status === "delayed" ? (
-                  <>
-                    <span className="sentiment-badge">{stock.sentiment_label}</span>
-                    <span
-                      className={`urgency-badge urgency-${stock.urgency_score >= 70 ? "high" : stock.urgency_score >= 40 ? "med" : "low"}`}
-                    >
-                      {stock.urgency_score.toFixed(0)}
-                    </span>
-                  </>
-                ) : (
-                  <span className="data-status-badge waiting">Waiting for market data</span>
-                )}
-                {stock.data_status === "delayed" ? (
-                  <span className="data-status-badge delayed">Delayed / limited feed</span>
-                ) : null}
-              </div>
-
-              {stock.data_status !== "waiting" ? <UrgencyBar score={stock.urgency_score} /> : null}
-
-              {stock.volume > 0 && (
-                <div className="vol-row">
-                  <span className="vol-label">Vol</span>
-                  <span className="vol-value">{formatVolume(stock.volume)}</span>
-                </div>
-              )}
-
-              <div className="freshness-row">
-                {(() => {
-                  const freshness = getFreshnessLabel(stock.last_updated, stock.data_status);
-                  return (
-                    <span className={`freshness-pill ${freshness.stale ? "stale" : "fresh"}`}>
-                      {freshness.label}
-                    </span>
-                  );
-                })()}
-              </div>
-              {stock.data_status_message ? (
-                <div className="data-status-copy">{stock.data_status_message}</div>
-              ) : null}
-
-              <div className="mini-chart">
-                <Sparkline points={stock.history} />
-              </div>
-
-              <div className="card-actions">
-                <button
-                  className="ghost-button"
-                  disabled={stock.history.length === 0}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setSelectedSymbol(stock.ticker);
-                    setShowChart(true);
-                  }}
-                >
-                  Open Chart
-                </button>
-                <button
-                  className="ghost-button"
-                  disabled={!hasUsablePrice(stock)}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setSelectedSymbol(stock.ticker);
-                    setTradePlanDraft(buildTradePlanDraft(stock));
-                  }}
-                >
-                  Seed Trade Plan
-                </button>
-                <button
-                  className="ghost-button"
-                  disabled={!hasUsablePrice(stock)}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setSelectedSymbol(stock.ticker);
-                    setAlertRuleDraft(buildAlertRuleDraft(stock));
-                  }}
-                >
-                  Create Alert
-                </button>
-              </div>
-            </article>
+            </section>
           ))}
         </div>
 

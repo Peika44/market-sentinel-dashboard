@@ -434,6 +434,28 @@ class SQLiteStore:
                 "payload": json.loads(row["payload_json"]),
             }
 
+    def list_ticker_notes(self, user_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, payload_json, updated_at
+                FROM ticker_notes
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            notes: list[dict] = []
+            for row in rows:
+                notes.append(
+                    {
+                        "ticker": row["ticker"],
+                        "updated_at": row["updated_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+            return notes
+
 
     def save_price_history_bulk(self, ticker: str, prices: list[float]) -> None:
         """Replace the stored price sequence for a ticker with the current in-memory deque."""

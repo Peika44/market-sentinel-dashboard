@@ -913,6 +913,9 @@ class DashboardState:
     def load_ticker_note(self, user_id: str, ticker: str) -> dict | None:
         return self._store.load_ticker_note(user_id, ticker)
 
+    def list_ticker_notes(self, user_id: str) -> list[dict]:
+        return self._store.list_ticker_notes(user_id)
+
     def flush_history_to_db(self) -> None:
         """Persist all in-memory price deques to SQLite. Safe to call from any thread."""
         for ticker, hist in list(self.price_history.items()):

@@ -190,6 +190,18 @@ def register_routes(app: FastAPI) -> None:
             payload=row["payload"],
         )
 
+    @app.get("/api/ticker-notes/{user_id}", response_model=list[StoredTickerNote])
+    async def list_ticker_notes(user_id: str):
+        rows = app.state.dashboard_state.list_ticker_notes(user_id)
+        return [
+            StoredTickerNote(
+                ticker=row["ticker"],
+                updated_at=row["updated_at"],
+                payload=row["payload"],
+            )
+            for row in rows
+        ]
+
     @app.post("/api/ticker-notes")
     async def save_ticker_note(payload: SaveTickerNoteRequest):
         updated_at = datetime.now(timezone.utc).isoformat()

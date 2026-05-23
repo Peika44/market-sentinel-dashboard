@@ -27,10 +27,15 @@ class RedisCache:
         logger.info("cache HIT %s", key)
         return json.loads(value)
 
-    def set_json(self, key: str, value: Any, ttl_seconds: int) -> bool:
+    def set_json(self, key: str, value: Any, ttl_seconds: int | None = None) -> bool:
         try:
-            self._client.setex(key, ttl_seconds, json.dumps(value))
-            logger.info("cache SET %s ttl=%ss", key, ttl_seconds)
+            encoded = json.dumps(value)
+            if ttl_seconds is None:
+                self._client.set(key, encoded)
+                logger.info("cache SET %s ttl=none", key)
+            else:
+                self._client.setex(key, ttl_seconds, encoded)
+                logger.info("cache SET %s ttl=%ss", key, ttl_seconds)
             return True
         except RedisError as exc:
             logger.warning("cache ERROR set %s: %s", key, exc)

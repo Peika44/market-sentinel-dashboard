@@ -2,8 +2,10 @@ import asyncio
 import json
 import os
 import random
+from contextlib import suppress
 from datetime import datetime, timezone
-from urllib.parse import urlencode
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from aiokafka import AIOKafkaProducer
@@ -22,9 +24,11 @@ ALPACA_WS_URL = os.getenv(
     f"wss://stream.data.alpaca.markets/v2/{ALPACA_FEED}",
 )
 ALPACA_DATA_URL = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets")
+ALPACA_TRADING_URL = os.getenv("ALPACA_TRADING_URL", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+TARGET_SYNC_INTERVAL_SECONDS = float(os.getenv("TARGET_SYNC_INTERVAL_SECONDS", "5.0"))
 
-SYMBOLS = {
+DEFAULT_SYMBOLS = {
     "AAPL": {"display_name": "Apple", "base": 212.10},
     "MSFT": {"display_name": "Microsoft", "base": 428.55},
     "NVDA": {"display_name": "NVIDIA", "base": 116.40},
@@ -36,6 +40,7 @@ SYMBOLS = {
     "IWM": {"display_name": "Russell 2000 ETF", "base": 208.35},
 }
 
+ACTIVE_TICKERS_CACHE_KEY = "market_feed:active_tickers"
 BASELINE_CACHE_KEY = "alpaca:snapshot_baselines"
 
 
@@ -59,15 +64,58 @@ async def publish_event(producer: AIOKafkaProducer, payload: dict) -> None:
     )
 
 
+def default_target_symbols() -> list[str]:
+    return sorted(DEFAULT_SYMBOLS.keys())
+
+
+def get_redis_client() -> Redis:
+    return Redis.from_url(REDIS_URL, decode_responses=True)
+
+
+def load_requested_symbols(redis_client: Redis | None = None) -> list[str]:
+    try:
+        redis_client = redis_client or get_redis_client()
+        payload = redis_client.get(ACTIVE_TICKERS_CACHE_KEY)
+        if not payload:
+            print(f"cache MISS {ACTIVE_TICKERS_CACHE_KEY}")
+            return default_target_symbols()
+        decoded = json.loads(payload)
+    except Exception as exc:
+        print(f"Redis active tickers read failed: {exc}")
+        return default_target_symbols()
+
+    if isinstance(decoded, dict):
+        raw_tickers = decoded.get("tickers", [])
+    elif isinstance(decoded, list):
+        raw_tickers = decoded
+    else:
+        raw_tickers = []
+
+    tickers = sorted({str(ticker).strip().upper() for ticker in raw_tickers if str(ticker).strip()})
+    return tickers or default_target_symbols()
+
+
 async def run_synthetic(producer: AIOKafkaProducer) -> None:
-    current_prices = {symbol: meta["base"] for symbol, meta in SYMBOLS.items()}
+    redis_client = get_redis_client()
+    current_prices = {
+        symbol: float(meta["base"])
+        for symbol, meta in DEFAULT_SYMBOLS.items()
+    }
     anchors = current_prices.copy()
 
     while True:
-        for symbol, meta in SYMBOLS.items():
+        for symbol in load_requested_symbols(redis_client):
+            meta = DEFAULT_SYMBOLS.get(
+                symbol,
+                {"display_name": symbol, "base": current_prices.get(symbol, 100.0)},
+            )
+            base_price = float(meta["base"])
+            current_prices.setdefault(symbol, base_price)
+            anchors.setdefault(symbol, base_price)
+
             move = random.uniform(-0.0045, 0.0045)
             current_prices[symbol] = max(
-                meta["base"] * 0.65,
+                base_price * 0.65,
                 current_prices[symbol] * (1.0 + move),
             )
             current_price = round(current_prices[symbol], 2)
@@ -78,7 +126,7 @@ async def run_synthetic(producer: AIOKafkaProducer) -> None:
             payload = {
                 "type": "price_update",
                 "ticker": symbol,
-                "display_name": meta["display_name"],
+                "display_name": str(meta["display_name"]),
                 "current_price": current_price,
                 "change_pct": change_pct,
                 "volume": random.randint(50_000, 2_500_000),
@@ -89,13 +137,35 @@ async def run_synthetic(producer: AIOKafkaProducer) -> None:
         await asyncio.sleep(PUBLISH_INTERVAL_SECONDS)
 
 
-def load_alpaca_snapshots() -> tuple[dict[str, float], dict[str, float]]:
+def alpaca_trading_base_urls() -> list[str]:
+    candidates = [
+        ALPACA_TRADING_URL.strip(),
+        "https://paper-api.alpaca.markets",
+        "https://api.alpaca.markets",
+    ]
+    urls: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = candidate.rstrip("/")
+        if not normalized or normalized in seen:
+            continue
+        urls.append(normalized)
+        seen.add(normalized)
+    return urls
+
+
+def load_alpaca_snapshots(
+    symbols: list[str],
+    symbol_meta: dict[str, dict[str, float | str]],
+) -> tuple[dict[str, float], dict[str, float]]:
     if not ALPACA_API_KEY_ID or not ALPACA_SECRET_KEY:
         raise RuntimeError("Missing Alpaca credentials.")
+    if not symbols:
+        return {}, {}
 
     query = urlencode(
         {
-            "symbols": ",".join(SYMBOLS.keys()),
+            "symbols": ",".join(symbols),
             "feed": ALPACA_FEED,
         }
     )
@@ -116,7 +186,9 @@ def load_alpaca_snapshots() -> tuple[dict[str, float], dict[str, float]]:
     anchors: dict[str, float] = {}
     current_prices: dict[str, float] = {}
 
-    for symbol, meta in SYMBOLS.items():
+    for symbol in symbols:
+        meta = symbol_meta.get(symbol, {"base": 100.0})
+        fallback_base = float(meta.get("base", 100.0))
         snapshot = snapshots.get(symbol, {})
         prev_daily_bar = snapshot.get("prevDailyBar") or {}
         daily_bar = snapshot.get("dailyBar") or {}
@@ -129,7 +201,7 @@ def load_alpaca_snapshots() -> tuple[dict[str, float], dict[str, float]]:
             or latest_trade.get("p")
             or latest_quote.get("ap")
             or latest_quote.get("bp")
-            or meta["base"]
+            or fallback_base
         )
         current = (
             latest_trade.get("p")
@@ -145,13 +217,59 @@ def load_alpaca_snapshots() -> tuple[dict[str, float], dict[str, float]]:
     return anchors, current_prices
 
 
-def get_redis_client() -> Redis:
-    return Redis.from_url(REDIS_URL, decode_responses=True)
+def load_alpaca_asset_metadata(symbols: list[str]) -> dict[str, dict[str, float | str]]:
+    if not symbols:
+        return {}
+
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY_ID,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+        "accept": "application/json",
+    }
+    metadata: dict[str, dict[str, float | str]] = {}
+
+    for symbol in symbols:
+        default_meta = DEFAULT_SYMBOLS.get(
+            symbol,
+            {"display_name": symbol, "base": 100.0},
+        )
+        metadata[symbol] = {
+            "display_name": str(default_meta["display_name"]),
+            "base": float(default_meta["base"]),
+        }
+        last_error: str | None = None
+
+        for base_url in alpaca_trading_base_urls():
+            request = Request(
+                f"{base_url}/v2/assets/{quote(symbol)}",
+                headers=headers,
+            )
+            try:
+                with urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                last_error = f"{base_url} returned {exc.code}"
+                if exc.code == 404:
+                    break
+                continue
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+
+            metadata[symbol]["display_name"] = str(payload.get("name") or symbol)
+            break
+
+        if last_error:
+            print(f"Asset metadata fallback for {symbol}: {last_error}")
+
+    return metadata
 
 
-def load_cached_baselines() -> tuple[dict[str, float], dict[str, float]] | None:
+def load_cached_baselines(
+    redis_client: Redis | None = None,
+) -> tuple[dict[str, float], dict[str, float]] | None:
     try:
-        redis_client = get_redis_client()
+        redis_client = redis_client or get_redis_client()
         payload = redis_client.get(BASELINE_CACHE_KEY)
         if not payload:
             print(f"cache MISS {BASELINE_CACHE_KEY}")
@@ -164,9 +282,13 @@ def load_cached_baselines() -> tuple[dict[str, float], dict[str, float]] | None:
         return None
 
 
-def store_cached_baselines(anchors: dict[str, float], current_prices: dict[str, float]) -> None:
+def store_cached_baselines(
+    anchors: dict[str, float],
+    current_prices: dict[str, float],
+    redis_client: Redis | None = None,
+) -> None:
     try:
-        redis_client = get_redis_client()
+        redis_client = redis_client or get_redis_client()
         redis_client.setex(
             BASELINE_CACHE_KEY,
             6 * 60 * 60,
@@ -182,27 +304,111 @@ def store_cached_baselines(anchors: dict[str, float], current_prices: dict[str, 
         print(f"Redis baseline cache write failed: {exc}")
 
 
+def prime_symbol_state(
+    symbols: set[str],
+    symbol_meta: dict[str, dict[str, float | str]],
+    anchors: dict[str, float],
+    previous_prices: dict[str, float],
+    redis_client: Redis,
+) -> None:
+    missing = sorted(
+        symbol
+        for symbol in symbols
+        if symbol not in anchors or symbol not in previous_prices or symbol not in symbol_meta
+    )
+    if not missing:
+        return
+
+    for symbol, meta in load_alpaca_asset_metadata(missing).items():
+        existing = DEFAULT_SYMBOLS.get(symbol, {"display_name": symbol, "base": 100.0}).copy()
+        existing.update(meta)
+        symbol_meta[symbol] = existing
+
+    try:
+        next_anchors, next_prices = load_alpaca_snapshots(missing, symbol_meta)
+    except Exception as exc:
+        print(f"Snapshot bootstrap fallback for {', '.join(missing)}: {exc}")
+        next_anchors = {}
+        next_prices = {}
+
+    for symbol in missing:
+        meta = symbol_meta.setdefault(symbol, {"display_name": symbol, "base": 100.0})
+        fallback_base = float(meta.get("base", 100.0))
+        anchors[symbol] = round(float(next_anchors.get(symbol, fallback_base)), 4)
+        previous_prices[symbol] = round(float(next_prices.get(symbol, anchors[symbol])), 4)
+        meta["base"] = anchors[symbol]
+
+    store_cached_baselines(anchors, previous_prices, redis_client)
+
+
+async def send_subscription_update(websocket, action: str, symbols: list[str]) -> None:
+    if not symbols:
+        return
+
+    await websocket.send(
+        json.dumps(
+            {
+                "action": action,
+                "quotes": symbols,
+                "bars": symbols,
+            }
+        )
+    )
+    print(f"Sent {action} update for symbols: {', '.join(symbols)}")
+
+
+async def sync_alpaca_subscriptions(
+    websocket,
+    redis_client: Redis,
+    subscription_state: dict[str, set[str]],
+    symbol_meta: dict[str, dict[str, float | str]],
+    anchors: dict[str, float],
+    previous_prices: dict[str, float],
+) -> None:
+    while True:
+        await asyncio.sleep(TARGET_SYNC_INTERVAL_SECONDS)
+        current_symbols = subscription_state["symbols"]
+        target_symbols = set(load_requested_symbols(redis_client))
+        to_add = sorted(target_symbols - current_symbols)
+        to_remove = sorted(current_symbols - target_symbols)
+
+        if not to_add and not to_remove:
+            continue
+
+        if to_add:
+            prime_symbol_state(set(to_add), symbol_meta, anchors, previous_prices, redis_client)
+            await send_subscription_update(websocket, "subscribe", to_add)
+
+        if to_remove:
+            await send_subscription_update(websocket, "unsubscribe", to_remove)
+
+        subscription_state["symbols"] = target_symbols
+        print(f"Active Alpaca symbols: {', '.join(sorted(target_symbols))}")
+
+
 async def run_alpaca_stream(producer: AIOKafkaProducer) -> None:
     if not ALPACA_API_KEY_ID or not ALPACA_SECRET_KEY:
         raise RuntimeError("Missing Alpaca credentials.")
 
-    symbol_list = list(SYMBOLS.keys())
-    try:
-        cached = load_cached_baselines()
-        if cached:
-            anchors, previous_prices = cached
-            print("Loaded Alpaca snapshot baselines from Redis cache.")
-        else:
-            anchors, previous_prices = load_alpaca_snapshots()
-            store_cached_baselines(anchors, previous_prices)
-            print("Loaded Alpaca snapshot baselines from API and cached them.")
-    except Exception as exc:
-        print(f"Failed to load Alpaca snapshots, using fallback baselines: {exc}")
-        previous_prices = {symbol: meta["base"] for symbol, meta in SYMBOLS.items()}
-        anchors = previous_prices.copy()
+    redis_client = get_redis_client()
+    symbol_meta: dict[str, dict[str, float | str]] = {
+        symbol: meta.copy()
+        for symbol, meta in DEFAULT_SYMBOLS.items()
+    }
+
+    cached = load_cached_baselines(redis_client)
+    if cached:
+        anchors, previous_prices = cached
+        print("Loaded Alpaca snapshot baselines from Redis cache.")
+    else:
+        anchors, previous_prices = {}, {}
+
+    initial_symbols = set(load_requested_symbols(redis_client))
+    prime_symbol_state(initial_symbols, symbol_meta, anchors, previous_prices, redis_client)
     event_count = 0
 
     while True:
+        sync_task: asyncio.Task | None = None
         try:
             async with websockets.connect(ALPACA_WS_URL, ping_interval=20, ping_timeout=20) as websocket:
                 print(f"Connected to Alpaca stream: {ALPACA_WS_URL}")
@@ -215,13 +421,23 @@ async def run_alpaca_stream(producer: AIOKafkaProducer) -> None:
                         }
                     )
                 )
-                await websocket.send(
-                    json.dumps(
-                        {
-                            "action": "subscribe",
-                            "quotes": symbol_list,
-                            "bars": symbol_list,
-                        }
+
+                subscription_state = {"symbols": set(initial_symbols)}
+                await send_subscription_update(
+                    websocket,
+                    "subscribe",
+                    sorted(subscription_state["symbols"]),
+                )
+                print(f"Active Alpaca symbols: {', '.join(sorted(subscription_state['symbols']))}")
+
+                sync_task = asyncio.create_task(
+                    sync_alpaca_subscriptions(
+                        websocket,
+                        redis_client,
+                        subscription_state,
+                        symbol_meta,
+                        anchors,
+                        previous_prices,
                     )
                 )
 
@@ -244,28 +460,31 @@ async def run_alpaca_stream(producer: AIOKafkaProducer) -> None:
                             print(f"Alpaca stream error payload: {message}")
                             continue
 
-                        symbol = message.get("S")
-                        if not symbol or symbol not in SYMBOLS:
+                        symbol = str(message.get("S") or "").upper()
+                        if not symbol or symbol not in subscription_state["symbols"]:
                             continue
 
-                        display_name = SYMBOLS[symbol]["display_name"]
+                        meta = symbol_meta.get(symbol, {"display_name": symbol, "base": 100.0})
+                        display_name = str(meta.get("display_name") or symbol)
 
                         if message_type == "q":
                             bid = message.get("bp")
                             ask = message.get("ap")
                             if bid is None and ask is None:
                                 continue
-                            current_price = float(ask or bid or previous_prices[symbol])
+                            current_price = float(ask or bid or previous_prices.get(symbol, 100.0))
                             volume = 0
                             timestamp = message.get("t")
                         elif message_type == "b":
-                            current_price = float(message.get("c", previous_prices[symbol]))
+                            current_price = float(
+                                message.get("c", previous_prices.get(symbol, 100.0))
+                            )
                             volume = int(message.get("v", 0))
                             timestamp = message.get("t")
                         else:
                             continue
 
-                        anchor = anchors.get(symbol, previous_prices[symbol])
+                        anchor = anchors.get(symbol, previous_prices.get(symbol, current_price))
                         change_pct = round(
                             ((current_price - anchor) / anchor) * 100.0,
                             2,
@@ -289,9 +508,19 @@ async def run_alpaca_stream(producer: AIOKafkaProducer) -> None:
                                 f"#{event_count}: {symbol} {payload['current_price']} "
                                 f"{payload['change_pct']}%"
                             )
+                        if event_count % 100 == 0:
+                            store_cached_baselines(anchors, previous_prices, redis_client)
         except Exception as exc:
             print(f"Alpaca stream error: {exc}. Retrying in 5s.")
             await asyncio.sleep(5)
+        finally:
+            if sync_task is not None:
+                sync_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await sync_task
+
+        initial_symbols = set(load_requested_symbols(redis_client))
+        prime_symbol_state(initial_symbols, symbol_meta, anchors, previous_prices, redis_client)
 
 
 async def main() -> None:

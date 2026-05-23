@@ -1,10 +1,11 @@
 export interface StockCard {
   ticker: string;
   display_name: string;
-  current_price: number;
-  change_pct: number;
+  current_price: number | null;
+  change_pct: number | null;
   volume: number;
-  last_updated: string;
+  last_updated: string | null;
+  data_status: "live" | "waiting";
   sentiment_score: number;
   sentiment_label: string;
   urgency_score: number;
@@ -15,6 +16,15 @@ export interface DashboardSnapshot {
   user_id: string;
   updated_at: string;
   stocks: StockCard[];
+}
+
+export interface TickerValidationResult {
+  ticker: string;
+  is_valid: boolean;
+  can_add: boolean;
+  display_name?: string | null;
+  source: string;
+  message: string;
 }
 
 export interface IndexQuote {

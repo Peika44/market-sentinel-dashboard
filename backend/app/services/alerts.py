@@ -11,8 +11,6 @@ from app.services.dashboard import DashboardState
 
 logger = logging.getLogger("market_sentinel_alerts")
 
-DEFAULT_USER_ID = "demo-user"
-
 
 class AlertEngine:
     def __init__(
@@ -28,11 +26,12 @@ class AlertEngine:
         self._state = state
 
     def evaluate_market_event(self, event: MarketEvent) -> list[dict]:
-        rules = self._store.list_alert_rules(DEFAULT_USER_ID)
+        rules = self._store.list_all_alert_rules()
         triggered: list[dict] = []
         previous_history = self._state.recent_history_before_event(event.ticker, limit=24)
 
         for row in rules:
+            user_id = row["user_id"]
             rule_id = row["rule_id"]
             payload = AlertRulePayload.model_validate(row["payload"])
             if not payload.enabled or payload.ticker.upper() != event.ticker.upper():
@@ -104,7 +103,7 @@ class AlertEngine:
             if triggered_value is None:
                 continue
 
-            cooldown_key = f"alert_cooldown:{DEFAULT_USER_ID}:{rule_id}"
+            cooldown_key = f"alert_cooldown:{user_id}:{rule_id}"
             if self._cache.get_json(cooldown_key) is not None:
                 logger.info("alert COOLDOWN %s", cooldown_key)
                 continue
@@ -120,7 +119,7 @@ class AlertEngine:
                 "message": message,
             }
             self._store.save_triggered_alert(
-                DEFAULT_USER_ID,
+                user_id,
                 event.ticker.upper(),
                 stored_payload,
                 triggered_at,
@@ -137,7 +136,7 @@ class AlertEngine:
                 f"Alert Triggered: {event.ticker.upper()}",
                 message,
             )
-            logger.info("alert TRIGGERED %s %s", event.ticker.upper(), payload.condition)
+            logger.info("alert TRIGGERED %s %s user=%s", event.ticker.upper(), payload.condition, user_id)
             triggered.append(
                 {
                     "ticker": event.ticker.upper(),
@@ -148,8 +147,8 @@ class AlertEngine:
 
         return triggered
 
-    def list_triggered_alerts(self, user_id: str, limit: int = 20) -> list[dict]:
-        return self._store.list_triggered_alerts(user_id, limit=limit)
+    def list_triggered_alerts(self, user_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
+        return self._store.list_triggered_alerts(user_id, limit=limit, offset=offset)
 
     @staticmethod
     def _parse_float(value: str) -> float | None:

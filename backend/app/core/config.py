@@ -14,6 +14,7 @@ class Settings:
     alpaca_secret_key: str = os.getenv("APCA_API_SECRET_KEY", "")
     alpaca_feed: str = os.getenv("ALPACA_FEED", "iex")
     alpaca_data_url: str = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets")
+    alpaca_trading_url: str = os.getenv("ALPACA_TRADING_URL", "")
     discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 

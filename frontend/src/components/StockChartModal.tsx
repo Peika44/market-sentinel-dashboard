@@ -222,6 +222,9 @@ export function StockChartModal({ stock, onClose }: StockChartModalProps) {
             </div>
           </div>
         ) : null}
+        {!loading && !error && candles.length === 0 ? (
+          <div className="modal-loading">No historical data is available yet for this symbol.</div>
+        ) : null}
 
         {stats ? (
           <div className="modal-metrics">

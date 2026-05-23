@@ -26,21 +26,35 @@ DISPLAY_NAMES = {
     "IWM": "Russell 2000 ETF",
 }
 
-SENTIMENT_SCORES = {
-    "AAPL": 0.61,
-    "MSFT": 0.58,
-    "NVDA": 0.72,
-    "TSLA": 0.37,
-    "AMZN": 0.54,
-    "META": 0.49,
-}
-
 OVERVIEW_TICKERS = ("SPY", "QQQ", "IWM")
 DEFAULT_WATCHLIST = ("AAPL", "NVDA", "MSFT", "TSLA")
 
 
-def sentiment_score_for(ticker: str) -> float:
-    return SENTIMENT_SCORES.get(ticker, 0.5)
+def sentiment_score_from_history(history: list[float]) -> float:
+    """Return a 0-1 momentum sentiment score derived from recent price history.
+
+    Compares the average of the first quarter of the window against the last
+    quarter.  A rising window scores above 0.5 (Bullish); falling scores below
+    (Bearish).  Requires at least 4 data points; returns 0.5 otherwise.
+
+    Mapping (momentum = % change older → recent):
+        ≥ +6 %  →  0.95  (strongly Bullish)
+          0 %   →  0.50  (Neutral)
+        ≤ −6 %  →  0.05  (strongly Bearish)
+    """
+    if len(history) < 4:
+        return 0.5
+
+    quarter = max(1, len(history) // 4)
+    older_avg = sum(history[:quarter]) / quarter
+    recent_avg = sum(history[-quarter:]) / quarter
+
+    if older_avg == 0.0:
+        return 0.5
+
+    momentum_pct = (recent_avg - older_avg) / older_avg * 100.0
+    score = 0.5 + momentum_pct / 12.0
+    return round(max(0.05, min(0.95, score)), 3)
 
 
 def sentiment_label_for(score: float) -> str:

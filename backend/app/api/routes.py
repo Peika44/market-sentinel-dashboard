@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
     SaveJournalEntryRequest,
@@ -12,6 +12,7 @@ from app.domain.models import (
     StoredJournalEntry,
     StoredTriggeredAlert,
     StoredTradePlanDraft,
+    TickerValidationResult,
     WatchlistMutation,
 )
 
@@ -35,11 +36,19 @@ def register_routes(app: FastAPI) -> None:
 
     @app.get("/api/market-overview")
     async def get_market_overview():
-        return {"indices": app.state.dashboard_state.build_overview()}
+        return {"indices": await app.state.dashboard_state.build_overview()}
+
+    @app.get("/api/tickers/validate", response_model=TickerValidationResult)
+    async def validate_ticker(ticker: str):
+        return await app.state.dashboard_state.validate_ticker(ticker)
 
     @app.post("/api/watchlist")
     async def add_to_watchlist(payload: WatchlistMutation):
+        validation = await app.state.dashboard_state.validate_ticker(payload.ticker)
+        if not validation.can_add:
+            raise HTTPException(status_code=400, detail=validation.message)
         app.state.dashboard_state.add_to_watchlist(payload.user_id, payload.ticker)
+        await app.state.dashboard_state.hydrate_watchlist_ticker(payload.ticker)
         return app.state.dashboard_state.build_snapshot(payload.user_id)
 
     @app.delete("/api/watchlist/{user_id}/{ticker}")
@@ -113,8 +122,8 @@ def register_routes(app: FastAPI) -> None:
         return {"ok": True, "rule_id": rule_id}
 
     @app.get("/api/triggered-alerts/{user_id}", response_model=list[StoredTriggeredAlert])
-    async def list_triggered_alerts(user_id: str, limit: int = 20):
-        rows = app.state.alert_engine.list_triggered_alerts(user_id, limit=limit)
+    async def list_triggered_alerts(user_id: str, limit: int = 20, offset: int = 0):
+        rows = app.state.alert_engine.list_triggered_alerts(user_id, limit=limit, offset=offset)
         return [
             StoredTriggeredAlert(
                 ticker=row["ticker"],
@@ -125,8 +134,8 @@ def register_routes(app: FastAPI) -> None:
         ]
 
     @app.get("/api/journal-entries/{user_id}", response_model=list[StoredJournalEntry])
-    async def list_journal_entries(user_id: str, limit: int = 12):
-        rows = app.state.dashboard_state.list_journal_entries(user_id, limit=limit)
+    async def list_journal_entries(user_id: str, limit: int = 12, offset: int = 0):
+        rows = app.state.dashboard_state.list_journal_entries(user_id, limit=limit, offset=offset)
         return [
             StoredJournalEntry(
                 entry_id=row["entry_id"],
@@ -152,7 +161,7 @@ def register_routes(app: FastAPI) -> None:
         return {
             "ticker": ticker.upper(),
             "range": range,
-            "candles": app.state.dashboard_state.build_history(ticker, range),
+            "candles": await app.state.dashboard_state.build_history(ticker, range),
         }
 
     @app.websocket("/ws/dashboard")
@@ -160,6 +169,8 @@ def register_routes(app: FastAPI) -> None:
         await app.state.websocket_hub.connect(websocket)
         try:
             while True:
-                await websocket.receive_text()
+                msg = await websocket.receive_text()
+                if msg == "ping":
+                    await websocket.send_text("pong")
         except WebSocketDisconnect:
             app.state.websocket_hub.disconnect(websocket)

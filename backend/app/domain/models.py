@@ -1,6 +1,18 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+_VALID_CONDITIONS = {
+    "urgency_above",
+    "price_change_above",
+    "price_change_below",
+    "volume_above",
+    "target_hit",
+    "drop_below_stop",
+    "breakout_above_recent_high",
+    "breakdown_below_recent_low",
+}
 
 
 class MarketEvent(BaseModel):
@@ -16,10 +28,11 @@ class MarketEvent(BaseModel):
 class StockCard(BaseModel):
     ticker: str
     display_name: str
-    current_price: float
-    change_pct: float
-    volume: int
-    last_updated: datetime
+    current_price: float | None = None
+    change_pct: float | None = None
+    volume: int = 0
+    last_updated: datetime | None = None
+    data_status: Literal["live", "waiting"] = "waiting"
     sentiment_score: float
     sentiment_label: str
     urgency_score: float
@@ -35,6 +48,15 @@ class DashboardSnapshot(BaseModel):
 class WatchlistMutation(BaseModel):
     user_id: str
     ticker: str
+
+
+class TickerValidationResult(BaseModel):
+    ticker: str
+    is_valid: bool
+    can_add: bool
+    display_name: str | None = None
+    source: str
+    message: str
 
 
 class TradePlanDraftPayload(BaseModel):
@@ -66,6 +88,38 @@ class AlertRulePayload(BaseModel):
     cooldownMinutes: str
     channel: str
     enabled: bool = True
+
+    @field_validator("condition")
+    @classmethod
+    def condition_must_be_valid(cls, v: str) -> str:
+        if v not in _VALID_CONDITIONS:
+            raise ValueError(
+                f"Unknown condition '{v}'. "
+                f"Valid options: {', '.join(sorted(_VALID_CONDITIONS))}"
+            )
+        return v
+
+    @field_validator("threshold")
+    @classmethod
+    def threshold_must_be_numeric(cls, v: str) -> str:
+        try:
+            val = float(v)
+        except (TypeError, ValueError):
+            raise ValueError("Threshold must be a valid number (e.g. 2.5 or 450).")
+        if val < 0:
+            raise ValueError("Threshold must be zero or greater.")
+        return v
+
+    @field_validator("cooldownMinutes")
+    @classmethod
+    def cooldown_must_be_positive(cls, v: str) -> str:
+        try:
+            val = float(v)
+        except (TypeError, ValueError):
+            raise ValueError("Cooldown must be a valid number of minutes (e.g. 15).")
+        if val <= 0:
+            raise ValueError("Cooldown must be greater than 0.")
+        return v
 
 
 class SaveAlertRuleRequest(BaseModel):

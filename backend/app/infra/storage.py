@@ -64,6 +64,18 @@ class SQLiteStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    price REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_price_history_ticker ON price_history(ticker)"
+            )
             conn.commit()
 
     def _ensure_alert_rules_table(self, conn: sqlite3.Connection) -> None:
@@ -139,6 +151,13 @@ class SQLiteStore:
             rows = conn.execute(
                 "SELECT ticker FROM watchlists WHERE user_id = ? ORDER BY ticker",
                 (user_id,),
+            ).fetchall()
+            return [row["ticker"] for row in rows]
+
+    def list_all_watchlist_tickers(self) -> list[str]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ticker FROM watchlists ORDER BY ticker"
             ).fetchall()
             return [row["ticker"] for row in rows]
 
@@ -231,6 +250,29 @@ class SQLiteStore:
                 )
             return rules
 
+    def list_all_alert_rules(self) -> list[dict]:
+        """Return all alert rules across every user, used by the alert engine."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT rule_id, user_id, ticker, payload_json, updated_at
+                FROM alert_rules
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+            rules: list[dict] = []
+            for row in rows:
+                rules.append(
+                    {
+                        "rule_id": row["rule_id"],
+                        "user_id": row["user_id"],
+                        "ticker": row["ticker"],
+                        "updated_at": row["updated_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+            return rules
+
     def set_alert_rule_enabled(
         self, user_id: str, rule_id: str, enabled: bool, updated_at: str
     ) -> dict | None:
@@ -286,7 +328,7 @@ class SQLiteStore:
             )
             conn.commit()
 
-    def list_triggered_alerts(self, user_id: str, limit: int = 20) -> list[dict]:
+    def list_triggered_alerts(self, user_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
@@ -294,9 +336,9 @@ class SQLiteStore:
                 FROM triggered_alerts
                 WHERE user_id = ?
                 ORDER BY triggered_at DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (user_id, limit),
+                (user_id, limit, offset),
             ).fetchall()
             alerts: list[dict] = []
             for row in rows:
@@ -326,7 +368,7 @@ class SQLiteStore:
             conn.commit()
             return entry_id
 
-    def list_journal_entries(self, user_id: str, limit: int = 12) -> list[dict]:
+    def list_journal_entries(self, user_id: str, limit: int = 12, offset: int = 0) -> list[dict]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
@@ -334,9 +376,9 @@ class SQLiteStore:
                 FROM journal_entries
                 WHERE user_id = ?
                 ORDER BY updated_at DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (user_id, limit),
+                (user_id, limit, offset),
             ).fetchall()
             entries: list[dict] = []
             for row in rows:
@@ -349,6 +391,44 @@ class SQLiteStore:
                     }
                 )
             return entries
+
+
+    def save_price_history_bulk(self, ticker: str, prices: list[float]) -> None:
+        """Replace the stored price sequence for a ticker with the current in-memory deque."""
+        ticker_upper = ticker.upper()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM price_history WHERE ticker = ?",
+                (ticker_upper,),
+            )
+            if prices:
+                conn.executemany(
+                    "INSERT INTO price_history (ticker, price) VALUES (?, ?)",
+                    [(ticker_upper, price) for price in prices],
+                )
+            conn.commit()
+
+    def load_price_history(self, ticker: str, limit: int = 180) -> list[float]:
+        """Return up to `limit` most recent prices for a ticker in chronological order."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT price FROM price_history
+                WHERE ticker = ?
+                ORDER BY id ASC
+                """,
+                (ticker.upper(),),
+            ).fetchall()
+        prices = [row["price"] for row in rows]
+        return prices[-limit:] if len(prices) > limit else prices
+
+    def list_tickers_with_history(self) -> list[str]:
+        """Return all tickers that have at least one persisted price point."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ticker FROM price_history"
+            ).fetchall()
+        return [row["ticker"] for row in rows]
 
 
 __all__ = ["SQLiteStore"]

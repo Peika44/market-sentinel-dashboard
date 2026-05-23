@@ -19,6 +19,14 @@ logger = logging.getLogger("market_sentinel_backend")
 logging.basicConfig(level=logging.INFO)
 
 
+async def _periodic_history_flush(state: DashboardState, interval: int = 60) -> None:
+    """Flush in-memory price deques to SQLite every `interval` seconds."""
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(interval)
+        await loop.run_in_executor(None, state.flush_history_to_db)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.store = SQLiteStore(settings.sqlite_db_path)
@@ -34,12 +42,21 @@ async def lifespan(app: FastAPI):
     )
     app.state.websocket_hub = WebSocketHub()
     consumer_task = asyncio.create_task(consume_market_events(app))
+    flush_task = asyncio.create_task(
+        _periodic_history_flush(app.state.dashboard_state)
+    )
 
     yield
 
     consumer_task.cancel()
+    flush_task.cancel()
     with suppress(asyncio.CancelledError):
         await consumer_task
+    with suppress(asyncio.CancelledError):
+        await flush_task
+    # Final flush so the last ≤60 s of ticks are not lost on clean shutdown
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, app.state.dashboard_state.flush_history_to_db)
 
 
 app = FastAPI(

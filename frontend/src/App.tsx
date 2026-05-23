@@ -12,21 +12,27 @@ import type {
   StockCard,
   StoredTradePlanDraft,
   StoredTriggeredAlert,
+  TickerValidationResult,
   TradePlanDraft,
 } from "./types";
 import { StockChartModal } from "./components/StockChartModal";
+import { Sparkline, UrgencyBar } from "./components/Sparkline";
+import { TradePlanModal } from "./components/TradePlanModal";
+import { AlertRuleModal } from "./components/AlertRuleModal";
+import { JournalModal } from "./components/JournalModal";
+import { DetailPanel } from "./components/DetailPanel";
+import {
+  formatAlertCondition,
+  formatChangePct,
+  formatCurrency,
+  formatVolume,
+} from "./utils/format";
 import { useMarketStatus } from "./hooks/useMarketStatus";
 
 const DEMO_USER_ID = "demo-user";
 const OVERVIEW_TICKERS = new Set(["SPY", "QQQ", "IWM"]);
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(value);
-}
+const ALERTS_PAGE = 5;
+const JOURNAL_PAGE = 5;
 
 function computeUrgency(changePct: number, sentimentScore: number): number {
   const priceComponent = Math.min(Math.abs(changePct) * 5, 100) * 0.65;
@@ -38,7 +44,7 @@ function sortByUrgency(stocks: StockCard[]): StockCard[] {
   return [...stocks].sort((left, right) => right.urgency_score - left.urgency_score);
 }
 
-function buildOverviewPreview(quote: IndexQuote): StockCard {
+function buildOverviewPreview(quote: IndexQuote, history: number[]): StockCard {
   return {
     ticker: quote.ticker,
     display_name: quote.label,
@@ -46,15 +52,16 @@ function buildOverviewPreview(quote: IndexQuote): StockCard {
     change_pct: quote.change_pct,
     volume: 0,
     last_updated: new Date().toISOString(),
+    data_status: "live",
     sentiment_score: 0.5,
     sentiment_label: "Neutral",
     urgency_score: computeUrgency(Math.abs(quote.change_pct), 0.5),
-    history: [quote.current_price],
+    history,
   };
 }
 
 function buildTradePlanDraft(stock: StockCard): TradePlanDraft {
-  const entry = stock.current_price || 0;
+  const entry = stock.current_price ?? 0;
   return {
     ticker: stock.ticker,
     entryPrice: entry.toFixed(2),
@@ -129,55 +136,53 @@ async function saveAlertRuleDraft(userId: string, rule: AlertRuleDraft): Promise
   const response = await fetch("/api/alert-rules", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user_id: userId,
-      rule,
-    }),
+    body: JSON.stringify({ user_id: userId, rule }),
   });
-
   if (!response.ok) {
     throw new Error("Failed to save alert rule.");
   }
 }
 
-function getFreshnessLabel(lastUpdated: string): { label: string; stale: boolean } {
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = (await response.json()) as { detail?: string };
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return payload.detail;
+    }
+  } catch {
+    // Ignore malformed error bodies and fall back to the caller-supplied message.
+  }
+  return fallback;
+}
+
+async function fetchTickerValidation(ticker: string): Promise<TickerValidationResult> {
+  const response = await fetch(`/api/tickers/validate?ticker=${encodeURIComponent(ticker)}`);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, "Ticker validation failed."));
+  }
+  return (await response.json()) as TickerValidationResult;
+}
+
+function isLiveStock(stock: StockCard): boolean {
+  return stock.data_status === "live";
+}
+
+function getFreshnessLabel(
+  lastUpdated: string | null,
+  dataStatus: StockCard["data_status"],
+): { label: string; stale: boolean } {
+  if (dataStatus !== "live" || !lastUpdated) {
+    return { label: "Waiting for first market tick", stale: true };
+  }
+
   const updatedAt = new Date(lastUpdated).getTime();
   const ageSeconds = Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
 
-  if (ageSeconds <= 10) {
-    return { label: `Updated ${ageSeconds}s ago`, stale: false };
-  }
   if (ageSeconds <= 60) {
     return { label: `Updated ${ageSeconds}s ago`, stale: false };
   }
   const ageMinutes = Math.round(ageSeconds / 60);
-  return {
-    label: `Updated ${ageMinutes}m ago`,
-    stale: ageMinutes >= 2,
-  };
-}
-
-function alertThresholdHelp(condition: string): string {
-  if (condition === "price_change_above" || condition === "price_change_below") {
-    return "Threshold is a percent change value, e.g. 2 means 2%.";
-  }
-  if (condition === "volume_above") {
-    return "Threshold is a raw share volume number, e.g. 500000.";
-  }
-  if (condition === "target_hit" || condition === "drop_below_stop") {
-    return "Threshold is a price level, e.g. 465 or 438.";
-  }
-  if (
-    condition === "breakout_above_recent_high" ||
-    condition === "breakdown_below_recent_low"
-  ) {
-    return "Threshold is a price buffer added to recent high/low. Use 0 for an exact level break, or 0.10 / 0.25 for confirmation.";
-  }
-  return "Threshold meaning depends on the selected condition.";
-}
-
-function formatAlertCondition(condition: string): string {
-  return condition.replace(/_/g, " ").replace(/\b\w/g, (char: string) => char.toUpperCase());
+  return { label: `Updated ${ageMinutes}m ago`, stale: ageMinutes >= 2 };
 }
 
 function groupAlertsByTicker(rules: StoredAlertRule[]): Array<{
@@ -196,35 +201,14 @@ function groupAlertsByTicker(rules: StoredAlertRule[]): Array<{
   }));
 }
 
-function Sparkline({ points }: { points: number[] }) {
-  if (points.length < 2) {
-    return <div className="chart-empty">Waiting for more ticks...</div>;
-  }
-
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const spread = max - min || 1;
-
-  const polyline = points
-    .map((point, index) => {
-      const x = (index / (points.length - 1)) * 100;
-      const y = 100 - ((point - min) / spread) * 100;
-      return `${x},${y}`;
-    })
-    .join(" ");
-
-  return (
-    <svg className="sparkline" viewBox="0 0 100 100" preserveAspectRatio="none">
-      <polyline fill="none" stroke="currentColor" strokeWidth="4" points={polyline} />
-    </svg>
-  );
-}
-
 function App() {
   const [stocks, setStocks] = useState<StockCard[]>([]);
   const [indices, setIndices] = useState<IndexQuote[]>([]);
+  const [indexHistory, setIndexHistory] = useState<Record<string, number[]>>({});
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [tickerInput, setTickerInput] = useState("");
+  const [tickerValidation, setTickerValidation] = useState<TickerValidationResult | null>(null);
+  const [validatingTicker, setValidatingTicker] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
@@ -235,19 +219,23 @@ function App() {
   const [alertRuleDraft, setAlertRuleDraft] = useState<AlertRuleDraft | null>(null);
   const [savedAlertRules, setSavedAlertRules] = useState<StoredAlertRule[]>([]);
   const [savingAlertRule, setSavingAlertRule] = useState(false);
+  const [alertValidationError, setAlertValidationError] = useState<string | null>(null);
   const [triggeredAlerts, setTriggeredAlerts] = useState<StoredTriggeredAlert[]>([]);
+  const [alertsOffset, setAlertsOffset] = useState(0);
+  const [hasMoreAlerts, setHasMoreAlerts] = useState(false);
   const [journalDraft, setJournalDraft] = useState<JournalEntryDraft | null>(null);
   const [savedJournalEntries, setSavedJournalEntries] = useState<StoredJournalEntry[]>([]);
   const [savingJournalEntry, setSavingJournalEntry] = useState(false);
+  const [journalOffset, setJournalOffset] = useState(0);
+  const [hasMoreJournal, setHasMoreJournal] = useState(false);
   const marketStatus = useMarketStatus();
   const groupedAlerts = groupAlertsByTicker(savedAlertRules);
+  const normalizedTickerInput = tickerInput.trim().toUpperCase();
+  const tickerAlreadyTracked = stocks.some((stock) => stock.ticker === normalizedTickerInput);
 
   async function loadDashboard() {
     const response = await fetch(`/api/dashboard/${DEMO_USER_ID}`);
-    if (!response.ok) {
-      throw new Error("Failed to load dashboard snapshot.");
-    }
-
+    if (!response.ok) throw new Error("Failed to load dashboard snapshot.");
     const payload = (await response.json()) as DashboardSnapshot;
     const nextStocks = sortByUrgency(payload.stocks);
     setStocks(nextStocks);
@@ -256,32 +244,28 @@ function App() {
 
   async function loadOverview() {
     const response = await fetch("/api/market-overview");
-    if (!response.ok) {
-      throw new Error("Failed to load market overview.");
-    }
-
+    if (!response.ok) throw new Error("Failed to load market overview.");
     const payload = (await response.json()) as MarketOverviewResponse;
     setIndices(payload.indices);
+    setIndexHistory((prev) => {
+      const next = { ...prev };
+      for (const quote of payload.indices) {
+        if (!next[quote.ticker]) next[quote.ticker] = [quote.current_price];
+      }
+      return next;
+    });
   }
 
   async function loadDrafts() {
     const response = await fetch(`/api/trade-plan-drafts/${DEMO_USER_ID}`);
-    if (!response.ok) {
-      throw new Error("Failed to load trade plan drafts.");
-    }
-
-    const payload = (await response.json()) as StoredTradePlanDraft[];
-    setSavedDrafts(payload);
+    if (!response.ok) throw new Error("Failed to load trade plan drafts.");
+    setSavedDrafts((await response.json()) as StoredTradePlanDraft[]);
   }
 
   async function loadAlertRules() {
     const response = await fetch(`/api/alert-rules/${DEMO_USER_ID}`);
-    if (!response.ok) {
-      throw new Error("Failed to load alert rules.");
-    }
-
-    const payload = (await response.json()) as StoredAlertRule[];
-    setSavedAlertRules(payload);
+    if (!response.ok) throw new Error("Failed to load alert rules.");
+    setSavedAlertRules((await response.json()) as StoredAlertRule[]);
   }
 
   async function toggleAlertRuleEnabled(ruleId: string, enabled: boolean) {
@@ -291,9 +275,7 @@ function App() {
         `/api/alert-rules/${DEMO_USER_ID}/${ruleId}?enabled=${enabled}`,
         { method: "PATCH" },
       );
-      if (!response.ok) {
-        throw new Error("Failed to update alert rule.");
-      }
+      if (!response.ok) throw new Error("Failed to update alert rule.");
       await loadAlertRules();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update alert rule.");
@@ -306,33 +288,37 @@ function App() {
       const response = await fetch(`/api/alert-rules/${DEMO_USER_ID}/${ruleId}`, {
         method: "DELETE",
       });
-      if (!response.ok) {
-        throw new Error("Failed to delete alert rule.");
-      }
+      if (!response.ok) throw new Error("Failed to delete alert rule.");
       await loadAlertRules();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete alert rule.");
     }
   }
 
-  async function loadTriggeredAlerts() {
-    const response = await fetch(`/api/triggered-alerts/${DEMO_USER_ID}?limit=10`);
-    if (!response.ok) {
-      throw new Error("Failed to load triggered alerts.");
-    }
-
+  async function loadTriggeredAlerts(offset = 0) {
+    const response = await fetch(
+      `/api/triggered-alerts/${DEMO_USER_ID}?limit=${ALERTS_PAGE + 1}&offset=${offset}`,
+    );
+    if (!response.ok) throw new Error("Failed to load triggered alerts.");
     const payload = (await response.json()) as StoredTriggeredAlert[];
-    setTriggeredAlerts(payload);
+    const hasMore = payload.length > ALERTS_PAGE;
+    const page = payload.slice(0, ALERTS_PAGE);
+    setTriggeredAlerts((prev) => (offset === 0 ? page : [...prev, ...page]));
+    setAlertsOffset(offset);
+    setHasMoreAlerts(hasMore);
   }
 
-  async function loadJournalEntries() {
-    const response = await fetch(`/api/journal-entries/${DEMO_USER_ID}?limit=10`);
-    if (!response.ok) {
-      throw new Error("Failed to load journal entries.");
-    }
-
+  async function loadJournalEntries(offset = 0) {
+    const response = await fetch(
+      `/api/journal-entries/${DEMO_USER_ID}?limit=${JOURNAL_PAGE + 1}&offset=${offset}`,
+    );
+    if (!response.ok) throw new Error("Failed to load journal entries.");
     const payload = (await response.json()) as StoredJournalEntry[];
-    setSavedJournalEntries(payload);
+    const hasMore = payload.length > JOURNAL_PAGE;
+    const page = payload.slice(0, JOURNAL_PAGE);
+    setSavedJournalEntries((prev) => (offset === 0 ? page : [...prev, ...page]));
+    setJournalOffset(offset);
+    setHasMoreJournal(hasMore);
   }
 
   async function refresh() {
@@ -356,24 +342,43 @@ function App() {
 
   async function addTicker(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const ticker = tickerInput.trim().toUpperCase();
-    if (!ticker) {
+    if (!normalizedTickerInput) return;
+    if (tickerAlreadyTracked) {
+      setError(`${normalizedTickerInput} is already on the watchlist.`);
       return;
     }
 
     setError(null);
-    const response = await fetch("/api/watchlist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: DEMO_USER_ID, ticker }),
-    });
+    let validation = tickerValidation;
+    if (!validation || validation.ticker !== normalizedTickerInput) {
+      setValidatingTicker(true);
+      try {
+        validation = await fetchTickerValidation(normalizedTickerInput);
+        setTickerValidation(validation);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Ticker validation failed.");
+        return;
+      } finally {
+        setValidatingTicker(false);
+      }
+    }
 
-    if (!response.ok) {
-      setError("Failed to add ticker to watchlist.");
+    if (!validation?.can_add) {
+      setError(validation?.message ?? "Ticker validation failed.");
       return;
     }
 
+    const response = await fetch("/api/watchlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: DEMO_USER_ID, ticker: normalizedTickerInput }),
+    });
+    if (!response.ok) {
+      setError(await readErrorMessage(response, "Failed to add ticker to watchlist."));
+      return;
+    }
     setTickerInput("");
+    setTickerValidation(null);
     await loadDashboard();
   }
 
@@ -382,17 +387,13 @@ function App() {
     const response = await fetch(`/api/watchlist/${DEMO_USER_ID}/${ticker}`, {
       method: "DELETE",
     });
-
     if (!response.ok) {
       setError("Failed to remove ticker from watchlist.");
       return;
     }
-
     await loadDashboard();
     setSelectedSymbol((current) => {
-      if (current !== ticker) {
-        return current;
-      }
+      if (current !== ticker) return current;
       return stocks.find((item) => item.ticker !== ticker)?.ticker ?? null;
     });
   }
@@ -401,27 +402,67 @@ function App() {
     refresh();
   }, []);
 
-  async function persistDraft() {
-    if (!tradePlanDraft) {
+  useEffect(() => {
+    if (!normalizedTickerInput) {
+      setTickerValidation(null);
+      setValidatingTicker(false);
       return;
     }
 
+    if (tickerAlreadyTracked) {
+      setTickerValidation({
+        ticker: normalizedTickerInput,
+        is_valid: true,
+        can_add: false,
+        source: "watchlist",
+        message: `${normalizedTickerInput} is already on the watchlist.`,
+      });
+      setValidatingTicker(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setValidatingTicker(true);
+      try {
+        const result = await fetchTickerValidation(normalizedTickerInput);
+        if (!cancelled) {
+          setTickerValidation(result);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTickerValidation({
+            ticker: normalizedTickerInput,
+            is_valid: false,
+            can_add: false,
+            source: "client",
+            message: err instanceof Error ? err.message : "Ticker validation failed.",
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setValidatingTicker(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [normalizedTickerInput, tickerAlreadyTracked]);
+
+  async function persistDraft() {
+    if (!tradePlanDraft) return;
     setSavingDraft(true);
     setError(null);
     try {
       const response = await fetch("/api/trade-plan-drafts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: DEMO_USER_ID,
-          draft: tradePlanDraft,
-        }),
+        body: JSON.stringify({ user_id: DEMO_USER_ID, draft: tradePlanDraft }),
       });
-
-      if (!response.ok) {
-        throw new Error("Failed to save trade plan draft.");
-      }
-
+      if (!response.ok) throw new Error("Failed to save trade plan draft.");
       await loadDrafts();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save trade plan draft.");
@@ -430,11 +471,27 @@ function App() {
     }
   }
 
+  function validateAlertDraft(draft: AlertRuleDraft): string | null {
+    const threshold = parseFloat(draft.threshold);
+    if (!draft.threshold.trim() || isNaN(threshold)) {
+      return "Threshold must be a valid number (e.g. 2.5 or 450).";
+    }
+    if (threshold < 0) return "Threshold must be zero or greater.";
+    const cooldown = parseFloat(draft.cooldownMinutes);
+    if (!draft.cooldownMinutes.trim() || isNaN(cooldown) || cooldown <= 0) {
+      return "Cooldown must be a positive number of minutes.";
+    }
+    return null;
+  }
+
   async function persistAlertRule() {
-    if (!alertRuleDraft) {
+    if (!alertRuleDraft) return;
+    const validationError = validateAlertDraft(alertRuleDraft);
+    if (validationError) {
+      setAlertValidationError(validationError);
       return;
     }
-
+    setAlertValidationError(null);
     setSavingAlertRule(true);
     setError(null);
     try {
@@ -462,24 +519,16 @@ function App() {
   }
 
   async function persistJournalEntry() {
-    if (!journalDraft) {
-      return;
-    }
-
+    if (!journalDraft) return;
     setSavingJournalEntry(true);
     setError(null);
     try {
       const response = await fetch("/api/journal-entries", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: DEMO_USER_ID,
-          entry: journalDraft,
-        }),
+        body: JSON.stringify({ user_id: DEMO_USER_ID, entry: journalDraft }),
       });
-      if (!response.ok) {
-        throw new Error("Failed to save journal entry.");
-      }
+      if (!response.ok) throw new Error("Failed to save journal entry.");
       await loadJournalEntries();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save journal entry.");
@@ -489,59 +538,77 @@ function App() {
   }
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/dashboard`);
+    let destroyed = false;
+    let retryDelay = 1_000;
+    let socket: WebSocket | null = null;
 
-    socket.onopen = () => setConnected(true);
-    socket.onclose = () => setConnected(false);
-    socket.onerror = () => setConnected(false);
+    function connect() {
+      if (destroyed) return;
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      socket = new WebSocket(`${protocol}://${window.location.host}/ws/dashboard`);
 
-    socket.onmessage = (message) => {
-      const payload = JSON.parse(message.data) as MarketEvent;
-      if (payload.type !== "price_update") {
-        return;
-      }
+      socket.onopen = () => {
+        setConnected(true);
+        retryDelay = 1_000;
+      };
 
-      if (OVERVIEW_TICKERS.has(payload.ticker)) {
-        setIndices((current) =>
-          current.map((quote) =>
-            quote.ticker === payload.ticker
-              ? {
-                  ...quote,
-                  current_price: payload.current_price,
-                  change_pct: payload.change_pct,
-                }
-              : quote,
+      socket.onclose = () => {
+        setConnected(false);
+        if (!destroyed) {
+          setTimeout(connect, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 30_000);
+        }
+      };
+
+      socket.onerror = () => { socket?.close(); };
+
+      socket.onmessage = (message) => {
+        const payload = JSON.parse(message.data) as MarketEvent;
+        if (payload.type !== "price_update") return;
+
+        if (OVERVIEW_TICKERS.has(payload.ticker)) {
+          setIndices((current) =>
+            current.map((quote) =>
+              quote.ticker === payload.ticker
+                ? { ...quote, current_price: payload.current_price, change_pct: payload.change_pct }
+                : quote,
+            ),
+          );
+          setIndexHistory((prev) => ({
+            ...prev,
+            [payload.ticker]: [...(prev[payload.ticker] ?? []), payload.current_price].slice(-24),
+          }));
+          return;
+        }
+
+        setStocks((current) =>
+          sortByUrgency(
+            current.map((stock) => {
+              if (stock.ticker !== payload.ticker) return stock;
+              const history = [...stock.history, payload.current_price].slice(-24);
+              return {
+                ...stock,
+                current_price: payload.current_price,
+                change_pct: payload.change_pct,
+                volume: payload.volume,
+                last_updated: payload.as_of,
+                data_status: "live",
+                history,
+                urgency_score: computeUrgency(payload.change_pct, stock.sentiment_score),
+              };
+            }),
           ),
         );
-        return;
-      }
+      };
+    }
 
-      setStocks((current) =>
-        sortByUrgency(
-          current.map((stock) => {
-            if (stock.ticker !== payload.ticker) {
-              return stock;
-            }
-
-            const history = [...stock.history, payload.current_price].slice(-24);
-            return {
-              ...stock,
-              current_price: payload.current_price,
-              change_pct: payload.change_pct,
-              volume: payload.volume,
-              history,
-              urgency_score: computeUrgency(payload.change_pct, stock.sentiment_score),
-            };
-          }),
-        ),
-      );
-    };
-
-    return () => socket.close();
+    connect();
+    return () => { destroyed = true; socket?.close(); };
   }, []);
 
-  const overviewSelections = indices.map(buildOverviewPreview);
+  const overviewSelections = indices.map((quote) =>
+    buildOverviewPreview(quote, indexHistory[quote.ticker] ?? [quote.current_price]),
+  );
   const selected =
     [...stocks, ...overviewSelections].find((stock) => stock.ticker === selectedSymbol) ??
     stocks[0] ??
@@ -555,13 +622,11 @@ function App() {
           <p className="eyebrow">Event-Driven Portfolio Monitor</p>
           <h1>Market Sentinel Dashboard</h1>
           <p className="subtitle">
-            Kafka-backed watchlist dashboard with real-time urgency ranking and one-command deployment.
+            Real-time watchlist with urgency-ranked alerts, integrated trade plans, and a journaling loop.
           </p>
         </div>
         <div className="status-cluster">
-          <span
-            className={`status-pill ${marketStatus.isOpen ? "market-open" : "market-closed"}`}
-          >
+          <span className={`status-pill ${marketStatus.isOpen ? "market-open" : "market-closed"}`}>
             <span className="status-dot" />
             Market {marketStatus.label}
           </span>
@@ -569,38 +634,42 @@ function App() {
             <span className="status-dot" />
             {connected ? "WebSocket live" : "Reconnecting"}
           </span>
-          <span className="status-pill neutral">Docker Compose</span>
-          <span className="status-pill neutral">Redpanda / Kafka</span>
         </div>
       </header>
 
-      <section className="hero-card">
-        <div>
-          <h2>Why this repo exists</h2>
-          <p>
-            The goal is to showcase deployable architecture, not just a static UI:
-            a publisher emits market events, the backend consumes and rebroadcasts them,
-            and the dashboard reconciles live updates into a ranked watchlist.
-          </p>
+      <section className="toolbar">
+        <div className="watchlist-input-group">
+          <form className="watchlist-form" onSubmit={addTicker}>
+            <input
+              value={tickerInput}
+              onChange={(event) => setTickerInput(event.target.value.toUpperCase())}
+              placeholder="Add ticker, e.g. AMZN"
+              maxLength={10}
+            />
+            <button
+              type="submit"
+              disabled={validatingTicker || tickerAlreadyTracked || tickerValidation?.can_add === false}
+            >
+              {validatingTicker ? "Checking…" : "Add"}
+            </button>
+          </form>
+          {normalizedTickerInput ? (
+            <p
+              className={`watchlist-validation ${
+                validatingTicker ? "checking" : tickerValidation?.can_add ? "ok" : "error"
+              }`}
+            >
+              {validatingTicker ? "Checking ticker…" : tickerValidation?.message ?? "Checking ticker…"}
+            </p>
+          ) : (
+            <p className="toolbar-note">
+              Add an active US equity ticker such as AMZN, NFLX, AMD, or SHOP.
+            </p>
+          )}
         </div>
         <button className="refresh-button" onClick={refresh} disabled={loading}>
-          {loading ? "Refreshing..." : "Refresh Snapshot"}
+          {loading ? "Refreshing…" : "Refresh"}
         </button>
-      </section>
-
-      <section className="toolbar">
-        <form className="watchlist-form" onSubmit={addTicker}>
-          <input
-            value={tickerInput}
-            onChange={(event) => setTickerInput(event.target.value.toUpperCase())}
-            placeholder="Add ticker, e.g. AMZN"
-            maxLength={10}
-          />
-          <button type="submit">Add</button>
-        </form>
-        <p className="toolbar-note">
-          Demo user: <code>{DEMO_USER_ID}</code>
-        </p>
       </section>
 
       {error ? <div className="error-banner">{error}</div> : null}
@@ -643,7 +712,9 @@ function App() {
           {stocks.map((stock) => (
             <article
               key={stock.ticker}
-              className={`stock-card ${selected?.ticker === stock.ticker ? "selected" : ""}`}
+              className={`stock-card ${selected?.ticker === stock.ticker ? "selected" : ""} ${
+                stock.data_status === "waiting" ? "waiting" : ""
+              }`}
               onClick={() => setSelectedSymbol(stock.ticker)}
             >
               <div className="card-header">
@@ -663,21 +734,53 @@ function App() {
               </div>
 
               <div className="card-price-row">
-                <strong>{formatCurrency(stock.current_price)}</strong>
-                <span className={stock.change_pct >= 0 ? "change-up" : "change-down"}>
-                  {stock.change_pct >= 0 ? "+" : ""}
-                  {stock.change_pct.toFixed(2)}%
+                <strong className={stock.data_status === "waiting" ? "pending-price" : ""}>
+                  {stock.data_status === "live"
+                    ? formatCurrency(stock.current_price)
+                    : "Waiting for data"}
+                </strong>
+                <span
+                  className={
+                    stock.data_status === "live"
+                      ? stock.change_pct != null && stock.change_pct >= 0
+                        ? "change-up"
+                        : "change-down"
+                      : "change-pending"
+                  }
+                >
+                  {stock.data_status === "live"
+                    ? formatChangePct(stock.change_pct)
+                    : "Subscribed"}
                 </span>
               </div>
 
               <div className="badge-row">
-                <span className="sentiment-badge">{stock.sentiment_label}</span>
-                <span className="urgency-badge">Urgency {stock.urgency_score.toFixed(0)}</span>
+                {stock.data_status === "live" ? (
+                  <>
+                    <span className="sentiment-badge">{stock.sentiment_label}</span>
+                    <span
+                      className={`urgency-badge urgency-${stock.urgency_score >= 70 ? "high" : stock.urgency_score >= 40 ? "med" : "low"}`}
+                    >
+                      {stock.urgency_score.toFixed(0)}
+                    </span>
+                  </>
+                ) : (
+                  <span className="data-status-badge waiting">Waiting for market data</span>
+                )}
               </div>
+
+              {stock.data_status === "live" ? <UrgencyBar score={stock.urgency_score} /> : null}
+
+              {stock.volume > 0 && (
+                <div className="vol-row">
+                  <span className="vol-label">Vol</span>
+                  <span className="vol-value">{formatVolume(stock.volume)}</span>
+                </div>
+              )}
 
               <div className="freshness-row">
                 {(() => {
-                  const freshness = getFreshnessLabel(stock.last_updated);
+                  const freshness = getFreshnessLabel(stock.last_updated, stock.data_status);
                   return (
                     <span className={`freshness-pill ${freshness.stale ? "stale" : "fresh"}`}>
                       {freshness.label}
@@ -693,6 +796,7 @@ function App() {
               <div className="card-actions">
                 <button
                   className="ghost-button"
+                  disabled={!isLiveStock(stock) || stock.history.length === 0}
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedSymbol(stock.ticker);
@@ -703,6 +807,7 @@ function App() {
                 </button>
                 <button
                   className="ghost-button"
+                  disabled={!isLiveStock(stock) || stock.current_price == null}
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedSymbol(stock.ticker);
@@ -713,6 +818,7 @@ function App() {
                 </button>
                 <button
                   className="ghost-button"
+                  disabled={!isLiveStock(stock) || stock.current_price == null}
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedSymbol(stock.ticker);
@@ -727,603 +833,80 @@ function App() {
         </div>
 
         <aside className="detail-panel">
-          {selected ? (
-            <>
-              <p className="eyebrow">Selected Position</p>
-              <h2>{selected.ticker}</h2>
-              <p className="detail-name">{selected.display_name}</p>
-              <p className="detail-meta">
-                {selected.volume > 0
-                  ? `${selected.volume.toLocaleString("en-US")} shares in latest update`
-                  : "Market overview selection"}
-              </p>
-
-              <div className="detail-metrics">
-                <div>
-                  <span>Last Price</span>
-                  <strong>{formatCurrency(selected.current_price)}</strong>
-                </div>
-                <div>
-                  <span>Daily Change</span>
-                  <strong className={selected.change_pct >= 0 ? "change-up" : "change-down"}>
-                    {selected.change_pct >= 0 ? "+" : ""}
-                    {selected.change_pct.toFixed(2)}%
-                  </strong>
-                </div>
-                <div>
-                  <span>Sentiment</span>
-                  <strong>{selected.sentiment_label}</strong>
-                </div>
-                <div>
-                  <span>Urgency Score</span>
-                  <strong>{selected.urgency_score.toFixed(2)}</strong>
-                </div>
-              </div>
-
-              <div className="detail-chart">
-                <Sparkline points={selected.history} />
-              </div>
-
-              <div className="detail-actions">
-                <button className="refresh-button" onClick={() => setShowChart(true)}>
-                  View Range Chart
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => setTradePlanDraft(buildTradePlanDraft(selected))}
-                >
-                  Open Trade Plan Seed
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => setAlertRuleDraft(buildAlertRuleDraft(selected))}
-                >
-                  Open Alert Rule
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => setJournalDraft(buildJournalDraft(selected))}
-                >
-                  Open Journal
-                </button>
-              </div>
-
-              <p className="detail-copy">
-                Urgency blends price movement with sentiment confidence so the UI can surface
-                names that need attention without polling every chart view individually.
-              </p>
-
-              <div className="saved-drafts-panel">
-                <p className="eyebrow">Saved Drafts</p>
-                {savedDrafts.length === 0 ? (
-                  <p className="draft-empty-state">No saved trade-plan drafts yet.</p>
-                ) : (
-                  <div className="saved-drafts-list">
-                    {savedDrafts.slice(0, 4).map((draft) => (
-                      <button
-                        key={`${draft.ticker}-${draft.updated_at}`}
-                        className="saved-draft-item"
-                        onClick={() => setTradePlanDraft(draft.payload)}
-                      >
-                        <strong>{draft.ticker}</strong>
-                        <span>{new Date(draft.updated_at).toLocaleString()}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="saved-drafts-panel">
-                <p className="eyebrow">Saved Alerts</p>
-                {groupedAlerts.length === 0 ? (
-                  <p className="draft-empty-state">No saved alert rules yet.</p>
-                ) : (
-                  <div className="saved-drafts-list">
-                    {groupedAlerts.slice(0, 4).map((group) => (
-                      <div
-                        key={group.ticker}
-                        className="saved-draft-item"
-                      >
-                        <div className="triggered-alert-header">
-                          <strong>{group.ticker}</strong>
-                          <span className="triggered-alert-badge">{group.rules.length} rules</span>
-                        </div>
-                        <div className="grouped-alert-list">
-                          {group.rules.map((rule) => (
-                            <div key={rule.rule_id} className="grouped-alert-row">
-                              <div>
-                                <span>
-                                  {formatAlertCondition(rule.payload.condition)} · {rule.payload.threshold}
-                                </span>
-                                <span className="triggered-alert-time">
-                                  {new Date(rule.updated_at).toLocaleString()}
-                                </span>
-                              </div>
-                              <div className="inline-action-row">
-                                <button
-                                  className="ghost-button"
-                                  onClick={() =>
-                                    setAlertRuleDraft({
-                                      ...rule.payload,
-                                      ruleId: rule.rule_id,
-                                    })
-                                  }
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  className="ghost-button"
-                                  onClick={() =>
-                                    void toggleAlertRuleEnabled(rule.rule_id, !rule.payload.enabled)
-                                  }
-                                >
-                                  {rule.payload.enabled ? "Disable" : "Enable"}
-                                </button>
-                                <button
-                                  className="ghost-button"
-                                  onClick={() => void deleteAlertRule(rule.rule_id)}
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="saved-drafts-panel">
-                <p className="eyebrow">Recent Triggered Alerts</p>
-                {triggeredAlerts.length === 0 ? (
-                  <p className="draft-empty-state">No alerts have triggered yet.</p>
-                ) : (
-                  <div className="saved-drafts-list">
-                    {triggeredAlerts.slice(0, 5).map((alert) => (
-                      <div
-                        key={`${alert.ticker}-${alert.triggered_at}-${alert.payload.condition}`}
-                        className="saved-draft-item"
-                      >
-                        <div className="triggered-alert-header">
-                          <strong>{alert.ticker}</strong>
-                          <span className="triggered-alert-badge">
-                            {formatAlertCondition(alert.payload.condition)}
-                          </span>
-                        </div>
-                        <span>{alert.payload.message}</span>
-                        <span className="triggered-alert-time">
-                          {new Date(alert.triggered_at).toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="saved-drafts-panel">
-                <p className="eyebrow">Recent Journal Entries</p>
-                {savedJournalEntries.length === 0 ? (
-                  <p className="draft-empty-state">No journal entries yet.</p>
-                ) : (
-                  <div className="saved-drafts-list">
-                    {savedJournalEntries.slice(0, 5).map((entry) => (
-                      <div key={entry.entry_id} className="saved-draft-item">
-                        <div className="triggered-alert-header">
-                          <strong>{entry.ticker}</strong>
-                          <span className="triggered-alert-badge">{entry.payload.stage}</span>
-                        </div>
-                        <span>{entry.payload.thesis}</span>
-                        {entry.payload.review ? <span>{entry.payload.review}</span> : null}
-                        {entry.payload.outcome ? <span>{entry.payload.outcome}</span> : null}
-                        <span className="triggered-alert-time">
-                          {new Date(entry.updated_at).toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="empty-panel">
-              <h2>No tracked tickers yet</h2>
-              <p>Add a symbol to the watchlist to populate the dashboard.</p>
-            </div>
-          )}
+          <DetailPanel
+            selected={selected}
+            savedDrafts={savedDrafts}
+            groupedAlerts={groupedAlerts}
+            triggeredAlerts={triggeredAlerts}
+            savedJournalEntries={savedJournalEntries}
+            hasMoreAlerts={hasMoreAlerts}
+            hasMoreJournal={hasMoreJournal}
+            onShowChart={() => setShowChart(true)}
+            onTradePlan={() => selected && setTradePlanDraft(buildTradePlanDraft(selected))}
+            onAlertRule={() => selected && setAlertRuleDraft(buildAlertRuleDraft(selected))}
+            onJournal={() => selected && setJournalDraft(buildJournalDraft(selected))}
+            onLoadDraft={(draft) => setTradePlanDraft(draft)}
+            onEditAlertRule={(rule) =>
+              setAlertRuleDraft({ ...rule.payload, ruleId: rule.rule_id })
+            }
+            onToggleAlertRule={(ruleId, enabled) =>
+              void toggleAlertRuleEnabled(ruleId, enabled)
+            }
+            onDeleteAlertRule={(ruleId) => void deleteAlertRule(ruleId)}
+            onLoadMoreAlerts={() => void loadTriggeredAlerts(alertsOffset + ALERTS_PAGE)}
+            onLoadMoreJournal={() => void loadJournalEntries(journalOffset + JOURNAL_PAGE)}
+          />
         </aside>
       </section>
 
       {showChart && selected ? (
-        <StockChartModal
-          stock={selected}
-          onClose={() => setShowChart(false)}
-        />
+        <StockChartModal stock={selected} onClose={() => setShowChart(false)} />
       ) : null}
 
       {tradePlanDraft ? (
-        <div
-          className="modal-backdrop"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              setTradePlanDraft(null);
-            }
-          }}
-        >
-          <div className="modal-card trade-plan-modal">
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">Trade Plan Seed</p>
-                <h2>{tradePlanDraft.ticker}</h2>
-                <p className="detail-name">
-                  Lightweight workflow bridge from dashboard selection to an executable plan draft.
-                </p>
-              </div>
-              <button
-                className="modal-close-button"
-                onClick={() => setTradePlanDraft(null)}
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="trade-plan-grid">
-              <label>
-                Entry Price
-                <input
-                  value={tradePlanDraft.entryPrice}
-                  onChange={(event) =>
-                    setTradePlanDraft((current) =>
-                      current
-                        ? { ...current, entryPrice: event.target.value }
-                        : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Stop Loss
-                <input
-                  value={tradePlanDraft.stopLoss}
-                  onChange={(event) =>
-                    setTradePlanDraft((current) =>
-                      current
-                        ? { ...current, stopLoss: event.target.value }
-                        : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Target Price
-                <input
-                  value={tradePlanDraft.targetPrice}
-                  onChange={(event) =>
-                    setTradePlanDraft((current) =>
-                      current
-                        ? { ...current, targetPrice: event.target.value }
-                        : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Risk %
-                <input
-                  value={tradePlanDraft.riskPercent}
-                  onChange={(event) =>
-                    setTradePlanDraft((current) =>
-                      current
-                        ? { ...current, riskPercent: event.target.value }
-                        : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Position Size USD
-                <input
-                  value={tradePlanDraft.positionSizeUsd}
-                  onChange={(event) =>
-                    setTradePlanDraft((current) =>
-                      current
-                        ? { ...current, positionSizeUsd: event.target.value }
-                        : current,
-                    )
-                  }
-                />
-              </label>
-              <label className="trade-plan-wide">
-                Thesis
-                <textarea
-                  value={tradePlanDraft.thesis}
-                  onChange={(event) =>
-                    setTradePlanDraft((current) =>
-                      current
-                        ? { ...current, thesis: event.target.value }
-                        : current,
-                    )
-                  }
-                />
-              </label>
-            </div>
-
-            <div className="trade-plan-summary">
-              <div>
-                <span>Risk / Reward</span>
-                <strong>
-                  {(() => {
-                    const entry = Number.parseFloat(tradePlanDraft.entryPrice);
-                    const stop = Number.parseFloat(tradePlanDraft.stopLoss);
-                    const target = Number.parseFloat(tradePlanDraft.targetPrice);
-                    const risk = Math.abs(entry - stop);
-                    const reward = Math.abs(target - entry);
-                    return risk > 0 ? `${(reward / risk).toFixed(2)}R` : "—";
-                  })()}
-                </strong>
-              </div>
-              <div>
-                <span>Workflow Note</span>
-                <strong>Use this draft as a handoff into a fuller trading workflow.</strong>
-              </div>
-            </div>
-
-            <div className="trade-plan-actions">
-              <button
-                className="refresh-button"
-                onClick={() => void persistDraft()}
-                disabled={savingDraft}
-              >
-                {savingDraft ? "Saving..." : "Save Draft"}
-              </button>
-              <button
-                className="ghost-button"
-                onClick={() => setAlertRuleDraft(buildTargetAlertFromTradePlan(tradePlanDraft))}
-              >
-                Create Target Alert
-              </button>
-              <button
-                className="ghost-button"
-                onClick={() => setAlertRuleDraft(buildStopAlertFromTradePlan(tradePlanDraft))}
-              >
-                Create Stop Alert
-              </button>
-              <button
-                className="ghost-button"
-                onClick={() => setJournalDraft(buildJournalFromTradePlan(tradePlanDraft))}
-              >
-                Open Journal Review
-              </button>
-              <button
-                className="ghost-button"
-                onClick={() => void createBothAlertsFromDraft(tradePlanDraft)}
-                disabled={savingAlertRule}
-              >
-                {savingAlertRule ? "Creating..." : "Create Both Alerts"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <TradePlanModal
+          draft={tradePlanDraft}
+          onChange={(next) => setTradePlanDraft(next)}
+          onClose={() => setTradePlanDraft(null)}
+          onSave={() => void persistDraft()}
+          savingDraft={savingDraft}
+          savingAlertRule={savingAlertRule}
+          onCreateTargetAlert={() =>
+            setAlertRuleDraft(buildTargetAlertFromTradePlan(tradePlanDraft))
+          }
+          onCreateStopAlert={() =>
+            setAlertRuleDraft(buildStopAlertFromTradePlan(tradePlanDraft))
+          }
+          onCreateBothAlerts={() => void createBothAlertsFromDraft(tradePlanDraft)}
+          onOpenJournal={() => setJournalDraft(buildJournalFromTradePlan(tradePlanDraft))}
+        />
       ) : null}
 
       {alertRuleDraft ? (
-        <div
-          className="modal-backdrop"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              setAlertRuleDraft(null);
-            }
+        <AlertRuleModal
+          draft={alertRuleDraft}
+          onChange={(next) => {
+            setAlertValidationError(null);
+            setAlertRuleDraft(next);
           }}
-        >
-          <div className="modal-card trade-plan-modal">
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">Alert Rule</p>
-                <h2>{alertRuleDraft.ticker}</h2>
-                <p className="detail-name">
-                  Minimal alert configuration to start building a decision-support loop.
-                </p>
-              </div>
-              <button
-                className="modal-close-button"
-                onClick={() => setAlertRuleDraft(null)}
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="trade-plan-grid">
-              <label>
-                Condition
-                <select
-                  value={alertRuleDraft.condition}
-                  onChange={(event) =>
-                    setAlertRuleDraft((current) =>
-                      current ? { ...current, condition: event.target.value } : current,
-                    )
-                  }
-                >
-                  <option value="urgency_above">Urgency Above</option>
-                  <option value="price_change_above">Price Change Above %</option>
-                  <option value="price_change_below">Price Change Below %</option>
-                  <option value="volume_above">Volume Above</option>
-                  <option value="target_hit">Target Hit</option>
-                  <option value="drop_below_stop">Drop Below Stop</option>
-                  <option value="breakout_above_recent_high">Breakout Above Recent High</option>
-                  <option value="breakdown_below_recent_low">Breakdown Below Recent Low</option>
-                </select>
-              </label>
-              <label>
-                Threshold
-                <input
-                  value={alertRuleDraft.threshold}
-                  onChange={(event) =>
-                    setAlertRuleDraft((current) =>
-                      current ? { ...current, threshold: event.target.value } : current,
-                    )
-                  }
-                />
-                <small className="field-help">
-                  {alertThresholdHelp(alertRuleDraft.condition)}
-                </small>
-              </label>
-              <label>
-                Cooldown Minutes
-                <input
-                  value={alertRuleDraft.cooldownMinutes}
-                  onChange={(event) =>
-                    setAlertRuleDraft((current) =>
-                      current ? { ...current, cooldownMinutes: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Channel
-                <input
-                  value={alertRuleDraft.channel}
-                  onChange={(event) =>
-                    setAlertRuleDraft((current) =>
-                      current ? { ...current, channel: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-            </div>
-
-            <div className="trade-plan-actions">
-              <button
-                className="refresh-button"
-                onClick={() => void persistAlertRule()}
-                disabled={savingAlertRule}
-              >
-                {savingAlertRule ? "Saving..." : "Save Alert Rule"}
-              </button>
-            </div>
-          </div>
-        </div>
+          onClose={() => {
+            setAlertRuleDraft(null);
+            setAlertValidationError(null);
+          }}
+          onSave={() => void persistAlertRule()}
+          savingAlertRule={savingAlertRule}
+          validationError={alertValidationError}
+        />
       ) : null}
 
       {journalDraft ? (
-        <div
-          className="modal-backdrop"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              setJournalDraft(null);
-            }
-          }}
-        >
-          <div className="modal-card trade-plan-modal">
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">Trade Journal</p>
-                <h2>{journalDraft.ticker}</h2>
-                <p className="detail-name">
-                  Record the current thesis, review notes, and outcome so the dashboard becomes a feedback loop.
-                </p>
-              </div>
-              <button className="modal-close-button" onClick={() => setJournalDraft(null)}>
-                Close
-              </button>
-            </div>
-
-            <div className="trade-plan-grid">
-              <label>
-                Stage
-                <select
-                  value={journalDraft.stage}
-                  onChange={(event) =>
-                    setJournalDraft((current) =>
-                      current ? { ...current, stage: event.target.value } : current,
-                    )
-                  }
-                >
-                  <option value="monitoring">Monitoring</option>
-                  <option value="entered">Entered</option>
-                  <option value="managed">Managed</option>
-                  <option value="closed">Closed</option>
-                </select>
-              </label>
-              <label className="trade-plan-wide">
-                Thesis
-                <textarea
-                  value={journalDraft.thesis}
-                  onChange={(event) =>
-                    setJournalDraft((current) =>
-                      current ? { ...current, thesis: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Entry Price
-                <input
-                  value={journalDraft.entryPrice}
-                  onChange={(event) =>
-                    setJournalDraft((current) =>
-                      current ? { ...current, entryPrice: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Stop Loss
-                <input
-                  value={journalDraft.stopLoss}
-                  onChange={(event) =>
-                    setJournalDraft((current) =>
-                      current ? { ...current, stopLoss: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                Target Price
-                <input
-                  value={journalDraft.targetPrice}
-                  onChange={(event) =>
-                    setJournalDraft((current) =>
-                      current ? { ...current, targetPrice: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label className="trade-plan-wide">
-                Review
-                <textarea
-                  value={journalDraft.review}
-                  onChange={(event) =>
-                    setJournalDraft((current) =>
-                      current ? { ...current, review: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-              <label className="trade-plan-wide">
-                Outcome
-                <textarea
-                  value={journalDraft.outcome}
-                  onChange={(event) =>
-                    setJournalDraft((current) =>
-                      current ? { ...current, outcome: event.target.value } : current,
-                    )
-                  }
-                />
-              </label>
-            </div>
-
-            <div className="trade-plan-actions">
-              <button
-                className="refresh-button"
-                onClick={() => void persistJournalEntry()}
-                disabled={savingJournalEntry}
-              >
-                {savingJournalEntry ? "Saving..." : "Save Journal Entry"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <JournalModal
+          draft={journalDraft}
+          onChange={(next) => setJournalDraft(next)}
+          onClose={() => setJournalDraft(null)}
+          onSave={() => void persistJournalEntry()}
+          savingJournalEntry={savingJournalEntry}
+        />
       ) : null}
     </div>
   );

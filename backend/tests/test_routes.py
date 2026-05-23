@@ -57,8 +57,14 @@ class FakeDashboardState:
         self.calls.append(("validate", ticker))
         return self.validation
 
-    def add_to_watchlist(self, user_id: str, ticker: str) -> None:
-        self.calls.append(("add", f"{user_id}:{ticker}"))
+    def add_to_watchlist(
+        self,
+        user_id: str,
+        ticker: str,
+        validation: TickerValidationResult | None = None,
+    ) -> None:
+        marker = f"{user_id}:{ticker}:{validation.feed_status if validation else 'none'}"
+        self.calls.append(("add", marker))
 
     async def hydrate_watchlist_ticker(self, ticker: str) -> None:
         self.calls.append(("hydrate", ticker))
@@ -89,6 +95,7 @@ class RouteTests(unittest.TestCase):
                 is_valid=True,
                 can_add=True,
                 display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
                 source="alpaca_assets",
                 message="Netflix, Inc. Common Stock (NFLX) is available to add.",
             )
@@ -109,6 +116,7 @@ class RouteTests(unittest.TestCase):
                 is_valid=False,
                 can_add=False,
                 display_name=None,
+                feed_status="unknown",
                 source="alpaca_assets",
                 message="AMAZ was not found in Alpaca assets.",
             )
@@ -129,8 +137,9 @@ class RouteTests(unittest.TestCase):
                 is_valid=True,
                 can_add=True,
                 display_name="Netflix, Inc. Common Stock",
+                feed_status="delayed",
                 source="alpaca_assets",
-                message="Netflix, Inc. Common Stock (NFLX) is available to add.",
+                message="Netflix, Inc. Common Stock (NFLX) is valid, but the configured IEX feed only has delayed bootstrap data right now.",
             ),
             snapshot=waiting_snapshot,
         )
@@ -147,10 +156,14 @@ class RouteTests(unittest.TestCase):
             state.calls,
             [
                 ("validate", "NFLX"),
-                ("add", "demo-user:NFLX"),
+                ("add", "demo-user:NFLX:delayed"),
                 ("hydrate", "NFLX"),
                 ("snapshot", "demo-user"),
             ],
+        )
+        self.assertEqual(
+            payload["stocks"][0]["data_status"],
+            "waiting",
         )
 
     def test_remove_from_watchlist_returns_updated_snapshot(self) -> None:
@@ -165,6 +178,7 @@ class RouteTests(unittest.TestCase):
                 is_valid=True,
                 can_add=True,
                 display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
                 source="alpaca_assets",
                 message="",
             ),

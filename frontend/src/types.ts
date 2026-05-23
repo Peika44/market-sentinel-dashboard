@@ -5,7 +5,9 @@ export interface StockCard {
   change_pct: number | null;
   volume: number;
   last_updated: string | null;
-  data_status: "live" | "waiting";
+  data_status: "live" | "waiting" | "delayed";
+  data_status_message?: string | null;
+  data_feed?: string | null;
   sentiment_score: number;
   sentiment_label: string;
   urgency_score: number;
@@ -23,6 +25,7 @@ export interface TickerValidationResult {
   is_valid: boolean;
   can_add: boolean;
   display_name?: string | null;
+  feed_status: "supported" | "delayed" | "unknown";
   source: string;
   message: string;
 }

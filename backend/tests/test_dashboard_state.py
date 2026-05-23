@@ -142,6 +142,7 @@ class DashboardStateTests(unittest.IsolatedAsyncioTestCase):
             is_valid=True,
             can_add=True,
             display_name="Netflix, Inc. Common Stock",
+            feed_status="supported",
             source="alpaca_assets",
             message="",
         )

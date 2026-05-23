@@ -47,7 +47,11 @@ def register_routes(app: FastAPI) -> None:
         validation = await app.state.dashboard_state.validate_ticker(payload.ticker)
         if not validation.can_add:
             raise HTTPException(status_code=400, detail=validation.message)
-        app.state.dashboard_state.add_to_watchlist(payload.user_id, payload.ticker)
+        app.state.dashboard_state.add_to_watchlist(
+            payload.user_id,
+            payload.ticker,
+            validation,
+        )
         await app.state.dashboard_state.hydrate_watchlist_ticker(payload.ticker)
         return app.state.dashboard_state.build_snapshot(payload.user_id)
 

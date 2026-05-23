@@ -36,6 +36,7 @@ logger = logging.getLogger("market_sentinel_state")
 SUPPORTED_WATCHLIST_TICKERS = frozenset(SEED_QUOTES.keys())
 TICKER_PATTERN = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 ACTIVE_TICKERS_CACHE_KEY = "market_feed:active_tickers"
+WAITING_TIMEOUT_SECONDS = 30
 
 RANGE_POINTS = {
     "5m": 12,
@@ -81,6 +82,9 @@ class DashboardState:
         }
         self.display_names: dict[str, str] = dict(DISPLAY_NAMES)
         self.latest_quotes: dict[str, MarketEvent] = {}
+        self.quote_sources: dict[str, str] = {}
+        self.pending_since: dict[str, datetime] = {}
+        self.status_messages: dict[str, str] = {}
         self.price_history: dict[str, deque[float]] = defaultdict(
             lambda: deque(maxlen=180)
         )
@@ -121,6 +125,9 @@ class DashboardState:
         for ticker in tickers_to_purge_history:
             self._store.save_price_history_bulk(ticker, [])
 
+        for ticker in self.watchlists.get(settings.default_user_id, set()):
+            self.pending_since.setdefault(ticker.upper(), datetime.now(timezone.utc))
+
         self._sync_active_tickers()
 
     def _bootstrap_history(self, ticker: str, seed_price: float) -> list[float]:
@@ -136,11 +143,18 @@ class DashboardState:
         return points
 
     def apply_event(self, event: MarketEvent) -> None:
+        self._record_quote(event, source="stream")
+
+    def _record_quote(self, event: MarketEvent, source: str) -> None:
         ticker = event.ticker.upper()
         normalized = event.model_copy(update={"ticker": ticker})
         if normalized.display_name:
             self.display_names[ticker] = normalized.display_name
         self.latest_quotes[ticker] = normalized
+        self.quote_sources[ticker] = source
+        self.pending_since.pop(ticker, None)
+        if source == "stream":
+            self.status_messages.pop(ticker, None)
         self.price_history[ticker].append(normalized.current_price)
 
     def recent_history_before_event(self, ticker: str, limit: int = 24) -> list[float]:
@@ -149,16 +163,34 @@ class DashboardState:
             return []
         return history[-limit:] if history else []
 
-    def add_to_watchlist(self, user_id: str, ticker: str) -> None:
+    def add_to_watchlist(
+        self,
+        user_id: str,
+        ticker: str,
+        validation: TickerValidationResult | None = None,
+    ) -> None:
+        ticker_upper = ticker.upper()
         user_watchlist = self.watchlists.setdefault(user_id, set(DEFAULT_WATCHLIST))
-        user_watchlist.add(ticker.upper())
+        user_watchlist.add(ticker_upper)
         self._store.replace_watchlist(user_id, list(user_watchlist))
+        self.pending_since[ticker_upper] = datetime.now(timezone.utc)
+        self.quote_sources.pop(ticker_upper, None)
+        self.latest_quotes.pop(ticker_upper, None)
+        if validation and validation.feed_status == "delayed" and validation.message:
+            self.status_messages[ticker_upper] = validation.message
+        else:
+            self.status_messages[ticker_upper] = self._waiting_message()
         self._sync_active_tickers()
 
     def remove_from_watchlist(self, user_id: str, ticker: str) -> None:
+        ticker_upper = ticker.upper()
         user_watchlist = self.watchlists.setdefault(user_id, set(DEFAULT_WATCHLIST))
-        user_watchlist.discard(ticker.upper())
+        user_watchlist.discard(ticker_upper)
         self._store.replace_watchlist(user_id, list(user_watchlist))
+        self.pending_since.pop(ticker_upper, None)
+        self.status_messages.pop(ticker_upper, None)
+        self.quote_sources.pop(ticker_upper, None)
+        self.latest_quotes.pop(ticker_upper, None)
         self._sync_active_tickers()
 
     async def hydrate_watchlist_ticker(self, ticker: str) -> None:
@@ -172,11 +204,23 @@ class DashboardState:
             and settings.alpaca_secret_key
         ):
             try:
-                self.apply_event(await self._fetch_alpaca_snapshot_event(normalized))
+                self._record_quote(
+                    await self._fetch_alpaca_snapshot_event(normalized),
+                    source="snapshot",
+                )
+                self.status_messages[normalized] = self._delayed_message(
+                    "Seeded from the latest Alpaca snapshot while waiting for a live stream tick."
+                )
                 return
             except Exception as snapshot_exc:
                 try:
-                    self.apply_event(await self._fetch_alpaca_latest_bar_event(normalized))
+                    self._record_quote(
+                        await self._fetch_alpaca_latest_bar_event(normalized),
+                        source="bar",
+                    )
+                    self.status_messages[normalized] = self._delayed_message(
+                        "Seeded from the latest Alpaca daily bar because no live snapshot was available."
+                    )
                     return
                 except Exception as bar_exc:
                     logger.warning(
@@ -184,6 +228,9 @@ class DashboardState:
                         normalized,
                         snapshot_exc,
                         bar_exc,
+                    )
+                    self.status_messages[normalized] = self._delayed_message(
+                        "Subscribed successfully, but the current feed has not returned a live snapshot or recent bar yet."
                     )
             return
 
@@ -230,6 +277,9 @@ class DashboardState:
         if not result.can_add:
             return result
 
+        if result.message:
+            return result
+
         if result.display_name:
             return result.model_copy(
                 update={"message": f"{result.display_name} ({normalized}) is available to add."}
@@ -255,7 +305,7 @@ class DashboardState:
             if self._is_placeholder_history(ticker, history):
                 history = []
             sentiment_score = sentiment_score_from_history(history)
-            has_live_data = quote is not None
+            data_status, status_message = self._resolve_data_status(ticker, quote)
             cards.append(
                 StockCard(
                     ticker=ticker,
@@ -264,19 +314,25 @@ class DashboardState:
                     change_pct=quote.change_pct if quote else None,
                     volume=quote.volume if quote else 0,
                     last_updated=quote.as_of if quote else None,
-                    data_status="live" if has_live_data else "waiting",
+                    data_status=data_status,
+                    data_status_message=status_message,
+                    data_feed=self._data_feed_label(),
                     sentiment_score=sentiment_score,
                     sentiment_label=sentiment_label_for(sentiment_score),
                     urgency_score=compute_urgency(
                         quote.change_pct,
                         sentiment_score,
-                    ) if quote else 0.0,
+                    ) if quote and data_status != "waiting" else 0.0,
                     history=history[-24:],
                 )
             )
 
         cards.sort(
-            key=lambda item: (item.data_status == "live", item.urgency_score),
+            key=lambda item: (
+                item.data_status == "live",
+                item.data_status == "delayed",
+                item.urgency_score,
+            ),
             reverse=True,
         )
 
@@ -343,6 +399,7 @@ class DashboardState:
                 is_valid=True,
                 can_add=True,
                 display_name=DISPLAY_NAMES.get(ticker, ticker),
+                feed_status="supported",
                 source="demo_universe",
                 message="",
             )
@@ -352,12 +409,13 @@ class DashboardState:
             ticker=ticker,
             is_valid=False,
             can_add=False,
+            feed_status="unknown",
             source="demo_universe",
             message=f"{ticker} is not in the demo ticker universe. Try {supported}.",
         )
 
     async def _validate_alpaca_ticker(self, ticker: str) -> TickerValidationResult:
-        cache_key = f"ticker_validation:alpaca:v3:{ticker}"
+        cache_key = f"ticker_validation:alpaca:v4:{ticker}"
         cached = self._cache.get_json(cache_key)
         if cached:
             return TickerValidationResult.model_validate(cached)
@@ -381,6 +439,7 @@ class DashboardState:
                         ticker=ticker,
                         is_valid=False,
                         can_add=False,
+                        feed_status="unknown",
                         source="alpaca_assets",
                         message=f"{ticker} was not found in Alpaca assets.",
                     )
@@ -409,6 +468,7 @@ class DashboardState:
                         is_valid=False,
                         can_add=False,
                         display_name=name,
+                        feed_status="unknown",
                         source="alpaca_assets",
                         message=(
                             f"{name} ({ticker}) exists, but it is not an active tradable US equity."
@@ -417,13 +477,15 @@ class DashboardState:
                     self._cache.set_json(cache_key, result.model_dump(mode="json"), ttl_seconds=3600)
                     return result
 
+                feed_status, message = await self._probe_feed_status(ticker, name)
                 result = TickerValidationResult(
                     ticker=ticker,
                     is_valid=True,
                     can_add=True,
                     display_name=name,
+                    feed_status=feed_status,
                     source="alpaca_assets",
-                    message="",
+                    message=message,
                 )
                 self._cache.set_json(cache_key, result.model_dump(mode="json"), ttl_seconds=3600)
                 return result
@@ -440,8 +502,40 @@ class DashboardState:
             ticker=ticker,
             is_valid=False,
             can_add=False,
+            feed_status="unknown",
             source="alpaca_assets",
             message="Ticker validation is temporarily unavailable. Try again shortly.",
+        )
+
+    async def _probe_feed_status(self, ticker: str, display_name: str) -> tuple[str, str]:
+        try:
+            snapshot = await self._fetch_alpaca_snapshot(ticker)
+            if self._market_event_from_snapshot(ticker, snapshot) is not None:
+                return (
+                    "supported",
+                    f"{display_name} ({ticker}) is available to add.",
+                )
+        except Exception as exc:
+            logger.info("feed probe snapshot miss ticker=%s reason=%s", ticker, exc)
+
+        try:
+            await self._fetch_alpaca_latest_bar_event(ticker)
+            return (
+                "delayed",
+                (
+                    f"{display_name} ({ticker}) is valid, but the configured "
+                    f"{self._data_feed_label()} feed only has delayed bootstrap data right now."
+                ),
+            )
+        except Exception as exc:
+            logger.info("feed probe bar miss ticker=%s reason=%s", ticker, exc)
+
+        return (
+            "delayed",
+            (
+                f"{display_name} ({ticker}) is valid, but the configured "
+                f"{self._data_feed_label()} feed has not returned snapshot or recent bar coverage yet."
+            ),
         )
 
     def _alpaca_trading_base_urls(self) -> list[str]:
@@ -529,6 +623,43 @@ class DashboardState:
                 f"Configured Alpaca {settings.alpaca_feed.upper()} feed returned no snapshot data."
             )
         return event
+
+    def _resolve_data_status(
+        self,
+        ticker: str,
+        quote: MarketEvent | None,
+    ) -> tuple[str, str | None]:
+        source = self.quote_sources.get(ticker)
+        if quote is not None:
+            if source == "stream":
+                return "live", f"Live stream via {self._data_feed_label()}."
+            return "delayed", self.status_messages.get(ticker, self._delayed_message())
+
+        pending_since = self.pending_since.get(ticker)
+        status_message = self.status_messages.get(ticker)
+        if status_message and status_message != self._waiting_message():
+            return "delayed", status_message
+        if pending_since is not None:
+            age_seconds = (datetime.now(timezone.utc) - pending_since).total_seconds()
+            if age_seconds < WAITING_TIMEOUT_SECONDS:
+                return "waiting", self._waiting_message()
+
+        return "delayed", status_message or self._delayed_message()
+
+    def _data_feed_label(self) -> str:
+        if settings.market_data_provider == "alpaca":
+            return settings.alpaca_feed.upper()
+        return settings.market_data_provider.upper()
+
+    def _waiting_message(self) -> str:
+        return f"Subscribed to {self._data_feed_label()}. Waiting for the first live tick."
+
+    def _delayed_message(self, detail: str | None = None) -> str:
+        if detail:
+            return f"{self._data_feed_label()}: {detail}"
+        return (
+            f"{self._data_feed_label()}: live streaming has not started yet, so the card is using delayed or limited coverage."
+        )
 
     async def _fetch_alpaca_latest_bar_event(self, ticker: str) -> MarketEvent:
         url = f"{settings.alpaca_data_url}/v2/stocks/{ticker}/bars"

@@ -53,6 +53,8 @@ function buildOverviewPreview(quote: IndexQuote, history: number[]): StockCard {
     volume: 0,
     last_updated: new Date().toISOString(),
     data_status: "live",
+    data_status_message: "Live overview snapshot.",
+    data_feed: "Overview",
     sentiment_score: 0.5,
     sentiment_label: "Neutral",
     urgency_score: computeUrgency(Math.abs(quote.change_pct), 0.5),
@@ -167,12 +169,19 @@ function isLiveStock(stock: StockCard): boolean {
   return stock.data_status === "live";
 }
 
+function hasUsablePrice(stock: StockCard): boolean {
+  return stock.current_price != null;
+}
+
 function getFreshnessLabel(
   lastUpdated: string | null,
   dataStatus: StockCard["data_status"],
 ): { label: string; stale: boolean } {
-  if (dataStatus !== "live" || !lastUpdated) {
+  if (dataStatus === "waiting" || !lastUpdated) {
     return { label: "Waiting for first market tick", stale: true };
+  }
+  if (dataStatus === "delayed") {
+    return { label: "Using delayed bootstrap data", stale: true };
   }
 
   const updatedAt = new Date(lastUpdated).getTime();
@@ -414,6 +423,7 @@ function App() {
         ticker: normalizedTickerInput,
         is_valid: true,
         can_add: false,
+        feed_status: "unknown",
         source: "watchlist",
         message: `${normalizedTickerInput} is already on the watchlist.`,
       });
@@ -435,6 +445,7 @@ function App() {
             ticker: normalizedTickerInput,
             is_valid: false,
             can_add: false,
+            feed_status: "unknown",
             source: "client",
             message: err instanceof Error ? err.message : "Ticker validation failed.",
           });
@@ -593,6 +604,7 @@ function App() {
                 volume: payload.volume,
                 last_updated: payload.as_of,
                 data_status: "live",
+                data_status_message: `Live stream via ${stock.data_feed ?? "market feed"}.`,
                 history,
                 urgency_score: computeUrgency(payload.change_pct, stock.sentiment_score),
               };
@@ -713,7 +725,11 @@ function App() {
             <article
               key={stock.ticker}
               className={`stock-card ${selected?.ticker === stock.ticker ? "selected" : ""} ${
-                stock.data_status === "waiting" ? "waiting" : ""
+                stock.data_status === "waiting"
+                  ? "waiting"
+                  : stock.data_status === "delayed"
+                    ? "delayed"
+                    : ""
               }`}
               onClick={() => setSelectedSymbol(stock.ticker)}
             >
@@ -735,9 +751,9 @@ function App() {
 
               <div className="card-price-row">
                 <strong className={stock.data_status === "waiting" ? "pending-price" : ""}>
-                  {stock.data_status === "live"
-                    ? formatCurrency(stock.current_price)
-                    : "Waiting for data"}
+                  {stock.data_status === "waiting" && !hasUsablePrice(stock)
+                    ? "Waiting for data"
+                    : formatCurrency(stock.current_price)}
                 </strong>
                 <span
                   className={
@@ -745,17 +761,19 @@ function App() {
                       ? stock.change_pct != null && stock.change_pct >= 0
                         ? "change-up"
                         : "change-down"
-                      : "change-pending"
+                      : stock.data_status === "delayed"
+                        ? "change-delayed"
+                        : "change-pending"
                   }
                 >
-                  {stock.data_status === "live"
+                  {stock.data_status === "live" || stock.data_status === "delayed"
                     ? formatChangePct(stock.change_pct)
                     : "Subscribed"}
                 </span>
               </div>
 
               <div className="badge-row">
-                {stock.data_status === "live" ? (
+                {stock.data_status === "live" || stock.data_status === "delayed" ? (
                   <>
                     <span className="sentiment-badge">{stock.sentiment_label}</span>
                     <span
@@ -767,9 +785,12 @@ function App() {
                 ) : (
                   <span className="data-status-badge waiting">Waiting for market data</span>
                 )}
+                {stock.data_status === "delayed" ? (
+                  <span className="data-status-badge delayed">Delayed / limited feed</span>
+                ) : null}
               </div>
 
-              {stock.data_status === "live" ? <UrgencyBar score={stock.urgency_score} /> : null}
+              {stock.data_status !== "waiting" ? <UrgencyBar score={stock.urgency_score} /> : null}
 
               {stock.volume > 0 && (
                 <div className="vol-row">
@@ -788,6 +809,9 @@ function App() {
                   );
                 })()}
               </div>
+              {stock.data_status_message ? (
+                <div className="data-status-copy">{stock.data_status_message}</div>
+              ) : null}
 
               <div className="mini-chart">
                 <Sparkline points={stock.history} />
@@ -796,7 +820,7 @@ function App() {
               <div className="card-actions">
                 <button
                   className="ghost-button"
-                  disabled={!isLiveStock(stock) || stock.history.length === 0}
+                  disabled={stock.history.length === 0}
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedSymbol(stock.ticker);
@@ -807,7 +831,7 @@ function App() {
                 </button>
                 <button
                   className="ghost-button"
-                  disabled={!isLiveStock(stock) || stock.current_price == null}
+                  disabled={!hasUsablePrice(stock)}
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedSymbol(stock.ticker);
@@ -818,7 +842,7 @@ function App() {
                 </button>
                 <button
                   className="ghost-button"
-                  disabled={!isLiveStock(stock) || stock.current_price == null}
+                  disabled={!hasUsablePrice(stock)}
                   onClick={(event) => {
                     event.stopPropagation();
                     setSelectedSymbol(stock.ticker);
@@ -842,8 +866,8 @@ function App() {
             hasMoreAlerts={hasMoreAlerts}
             hasMoreJournal={hasMoreJournal}
             onShowChart={() => setShowChart(true)}
-            onTradePlan={() => selected && setTradePlanDraft(buildTradePlanDraft(selected))}
-            onAlertRule={() => selected && setAlertRuleDraft(buildAlertRuleDraft(selected))}
+            onTradePlan={() => selected && hasUsablePrice(selected) && setTradePlanDraft(buildTradePlanDraft(selected))}
+            onAlertRule={() => selected && hasUsablePrice(selected) && setAlertRuleDraft(buildAlertRuleDraft(selected))}
             onJournal={() => selected && setJournalDraft(buildJournalDraft(selected))}
             onLoadDraft={(draft) => setTradePlanDraft(draft)}
             onEditAlertRule={(rule) =>

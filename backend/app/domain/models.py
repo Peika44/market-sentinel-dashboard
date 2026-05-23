@@ -32,7 +32,9 @@ class StockCard(BaseModel):
     change_pct: float | None = None
     volume: int = 0
     last_updated: datetime | None = None
-    data_status: Literal["live", "waiting"] = "waiting"
+    data_status: Literal["live", "waiting", "delayed"] = "waiting"
+    data_status_message: str | None = None
+    data_feed: str | None = None
     sentiment_score: float
     sentiment_label: str
     urgency_score: float
@@ -55,6 +57,7 @@ class TickerValidationResult(BaseModel):
     is_valid: bool
     can_add: bool
     display_name: str | None = None
+    feed_status: Literal["supported", "delayed", "unknown"] = "unknown"
     source: str
     message: str
 

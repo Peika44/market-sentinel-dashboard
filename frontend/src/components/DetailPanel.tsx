@@ -59,17 +59,25 @@ export function DetailPanel({
   }
 
   const isLive = selected.data_status === "live";
+  const isDelayed = selected.data_status === "delayed";
   const hasHistory = selected.history.length > 0;
+  const hasUsablePrice = selected.current_price != null;
 
   return (
     <>
       <p className="eyebrow">Selected Position</p>
       <h2>{selected.ticker}</h2>
       <p className="detail-name">{selected.display_name}</p>
-      {!isLive ? <p className="detail-status-banner">Subscribed. Waiting for first market update.</p> : null}
+      {!isLive ? (
+        <p className={`detail-status-banner ${isDelayed ? "delayed" : ""}`}>
+          {selected.data_status_message ?? "Subscribed. Waiting for first market update."}
+        </p>
+      ) : null}
       <p className="detail-meta">
-        {!isLive
+        {!isLive && !isDelayed
           ? "Price, change, and alert seeds will unlock after the first live tick arrives."
+          : isDelayed
+          ? `Feed ${selected.data_feed ?? "market"} is available in delayed mode until a live stream tick arrives.`
           : selected.volume > 0
           ? `${selected.volume.toLocaleString("en-US")} shares in latest update`
           : "Market overview selection"}
@@ -78,20 +86,20 @@ export function DetailPanel({
       <div className="detail-metrics">
         <div>
           <span>Last Price</span>
-          <strong>{isLive ? formatCurrency(selected.current_price) : "Waiting…"}</strong>
+          <strong>{hasUsablePrice ? formatCurrency(selected.current_price) : "Waiting…"}</strong>
         </div>
         <div>
           <span>Daily Change</span>
           <strong
             className={
-              isLive
+              hasUsablePrice
                 ? selected.change_pct != null && selected.change_pct >= 0
                   ? "change-up"
                   : "change-down"
                 : "change-pending"
             }
           >
-            {isLive ? formatChangePct(selected.change_pct) : "Waiting…"}
+            {hasUsablePrice ? formatChangePct(selected.change_pct) : "Waiting…"}
           </strong>
         </div>
         <div>
@@ -100,8 +108,8 @@ export function DetailPanel({
         </div>
         <div>
           <span>Urgency</span>
-          <strong>{isLive ? selected.urgency_score.toFixed(0) : "Pending"}</strong>
-          {isLive ? <UrgencyBar score={selected.urgency_score} /> : null}
+          <strong>{hasUsablePrice ? selected.urgency_score.toFixed(0) : "Pending"}</strong>
+          {hasUsablePrice ? <UrgencyBar score={selected.urgency_score} /> : null}
         </div>
       </div>
 
@@ -110,13 +118,13 @@ export function DetailPanel({
       </div>
 
       <div className="detail-actions">
-        <button className="refresh-button" onClick={onShowChart} disabled={!isLive || !hasHistory}>
+        <button className="refresh-button" onClick={onShowChart} disabled={!hasHistory}>
           View Chart
         </button>
-        <button className="ghost-button" onClick={onTradePlan} disabled={!isLive || selected.current_price == null}>
+        <button className="ghost-button" onClick={onTradePlan} disabled={!hasUsablePrice}>
           Trade Plan
         </button>
-        <button className="ghost-button" onClick={onAlertRule} disabled={!isLive || selected.current_price == null}>
+        <button className="ghost-button" onClick={onAlertRule} disabled={!hasUsablePrice}>
           Alert Rule
         </button>
         <button className="ghost-button" onClick={onJournal}>

@@ -343,6 +343,11 @@ textarea {
   background: rgba(11, 18, 30, 0.82);
 }
 
+.stock-card.delayed {
+  border-color: rgba(255, 184, 77, 0.2);
+  background: rgba(19, 17, 10, 0.78);
+}
+
 .card-header,
 .card-price-row,
 .badge-row {
@@ -374,6 +379,12 @@ textarea {
   border: 1px solid rgba(130, 156, 184, 0.22);
   color: #c6d4e2;
   font-size: 0.82rem;
+}
+
+.detail-status-banner.delayed {
+  background: rgba(255, 184, 77, 0.14);
+  border-color: rgba(255, 184, 77, 0.24);
+  color: #ffd7a1;
 }
 
 .ticker {
@@ -426,6 +437,10 @@ textarea {
   color: #b9c5d3;
 }
 
+.change-delayed {
+  color: #ffd7a1;
+}
+
 .vol-row {
   margin-top: 8px;
   display: flex;
@@ -451,6 +466,13 @@ textarea {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.data-status-copy {
+  margin-top: 10px;
+  color: #c9b38a;
+  font-size: 0.84rem;
+  line-height: 1.45;
 }
 
 .sentiment-badge,
@@ -485,6 +507,11 @@ textarea {
 .data-status-badge.waiting {
   background: rgba(130, 156, 184, 0.12);
   color: #c6d4e2;
+}
+
+.data-status-badge.delayed {
+  background: rgba(255, 184, 77, 0.14);
+  color: #ffd7a1;
 }
 
 .urgency-bar-track {

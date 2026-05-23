@@ -52,6 +52,7 @@ class FakeDashboardState:
         self.validation = validation
         self.snapshot = snapshot or build_snapshot()
         self.calls: list[tuple[str, str]] = []
+        self.tracked_tickers: set[str] = {self.snapshot.stocks[0].ticker} if self.snapshot.stocks else set()
 
     async def validate_ticker(self, ticker: str) -> TickerValidationResult:
         self.calls.append(("validate", ticker))
@@ -75,6 +76,10 @@ class FakeDashboardState:
 
     def remove_from_watchlist(self, user_id: str, ticker: str) -> None:
         self.calls.append(("remove", f"{user_id}:{ticker}"))
+
+    def is_tracked(self, user_id: str, ticker: str) -> bool:
+        self.calls.append(("tracked", f"{user_id}:{ticker}"))
+        return ticker.upper() in self.tracked_tickers
 
 
 class RouteTests(unittest.TestCase):
@@ -197,6 +202,60 @@ class RouteTests(unittest.TestCase):
                 ("snapshot", "demo-user"),
             ],
         )
+
+    def test_retry_watchlist_ticker_rehydrates_tracked_symbol(self) -> None:
+        delayed_snapshot = build_snapshot("NFLX", data_status="delayed", current_price=421.55)
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="delayed",
+                source="alpaca_assets",
+                message="NFLX has delayed bootstrap coverage.",
+            ),
+            snapshot=delayed_snapshot,
+        )
+        client = self.make_client(state)
+
+        response = client.post("/api/watchlist/demo-user/NFLX/retry")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            state.calls,
+            [
+                ("tracked", "demo-user:NFLX"),
+                ("hydrate", "NFLX"),
+                ("snapshot", "demo-user"),
+            ],
+        )
+
+    def test_retry_watchlist_ticker_rejects_untracked_symbol(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+            snapshot=DashboardSnapshot(
+                user_id="demo-user",
+                updated_at=datetime(2026, 5, 23, tzinfo=timezone.utc),
+                stocks=[],
+            ),
+        )
+        state.tracked_tickers = set()
+        client = self.make_client(state)
+
+        response = client.post("/api/watchlist/demo-user/NFLX/retry")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Ticker is not on the watchlist.")
+        self.assertEqual(state.calls, [("tracked", "demo-user:NFLX")])
 
 
 if __name__ == "__main__":

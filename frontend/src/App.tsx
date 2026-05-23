@@ -225,6 +225,7 @@ function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [showChart, setShowChart] = useState(false);
   const [tradePlanDraft, setTradePlanDraft] = useState<TradePlanDraft | null>(null);
+  const [retryingBootstrap, setRetryingBootstrap] = useState(false);
   const [savedDrafts, setSavedDrafts] = useState<StoredTradePlanDraft[]>([]);
   const [savingDraft, setSavingDraft] = useState(false);
   const [alertRuleDraft, setAlertRuleDraft] = useState<AlertRuleDraft | null>(null);
@@ -414,6 +415,27 @@ function App() {
       if (current !== ticker) return current;
       return stocks.find((item) => item.ticker !== ticker)?.ticker ?? null;
     });
+  }
+
+  async function retryBootstrap(ticker: string) {
+    setRetryingBootstrap(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/watchlist/${DEMO_USER_ID}/${ticker}/retry`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response, "Failed to retry bootstrap."));
+      }
+      const payload = (await response.json()) as DashboardSnapshot;
+      const nextStocks = sortByUrgency(payload.stocks);
+      setStocks(nextStocks);
+      setSelectedSymbol((current) => current ?? nextStocks[0]?.ticker ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to retry bootstrap.");
+    } finally {
+      setRetryingBootstrap(false);
+    }
   }
 
   useEffect(() => {
@@ -644,6 +666,18 @@ function App() {
     : "Idle";
   const providerLabel = health?.provider?.toUpperCase() ?? "UNKNOWN";
   const feedLabel = health?.feed?.toUpperCase() ?? "N/A";
+
+  useEffect(() => {
+    if (!selected || selected.data_status === "live") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void retryBootstrap(selected.ticker);
+    }, selected.data_status === "waiting" ? 15000 : 30000);
+
+    return () => window.clearTimeout(timer);
+  }, [selected?.ticker, selected?.data_status]);
 
   return (
     <div className="app-shell">
@@ -905,6 +939,8 @@ function App() {
             onTradePlan={() => selected && hasUsablePrice(selected) && setTradePlanDraft(buildTradePlanDraft(selected))}
             onAlertRule={() => selected && hasUsablePrice(selected) && setAlertRuleDraft(buildAlertRuleDraft(selected))}
             onJournal={() => selected && setJournalDraft(buildJournalDraft(selected))}
+            onRetryBootstrap={() => selected && void retryBootstrap(selected.ticker)}
+            retryingBootstrap={retryingBootstrap}
             onLoadDraft={(draft) => setTradePlanDraft(draft)}
             onEditAlertRule={(rule) =>
               setAlertRuleDraft({ ...rule.payload, ruleId: rule.rule_id })

@@ -61,6 +61,13 @@ def register_routes(app: FastAPI) -> None:
         app.state.dashboard_state.remove_from_watchlist(user_id, ticker)
         return app.state.dashboard_state.build_snapshot(user_id)
 
+    @app.post("/api/watchlist/{user_id}/{ticker}/retry")
+    async def retry_watchlist_ticker(user_id: str, ticker: str):
+        if not app.state.dashboard_state.is_tracked(user_id, ticker):
+            raise HTTPException(status_code=404, detail="Ticker is not on the watchlist.")
+        await app.state.dashboard_state.hydrate_watchlist_ticker(ticker)
+        return app.state.dashboard_state.build_snapshot(user_id)
+
     @app.get("/api/trade-plan-drafts/{user_id}", response_model=list[StoredTradePlanDraft])
     async def list_trade_plan_drafts(user_id: str):
         rows = app.state.dashboard_state.list_trade_plan_drafts(user_id)

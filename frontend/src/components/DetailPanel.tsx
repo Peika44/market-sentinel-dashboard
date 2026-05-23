@@ -22,6 +22,8 @@ interface DetailPanelProps {
   onTradePlan: () => void;
   onAlertRule: () => void;
   onJournal: () => void;
+  onRetryBootstrap: () => void;
+  retryingBootstrap: boolean;
   onLoadDraft: (draft: TradePlanDraft) => void;
   onEditAlertRule: (rule: StoredAlertRule) => void;
   onToggleAlertRule: (ruleId: string, enabled: boolean) => void;
@@ -42,6 +44,8 @@ export function DetailPanel({
   onTradePlan,
   onAlertRule,
   onJournal,
+  onRetryBootstrap,
+  retryingBootstrap,
   onLoadDraft,
   onEditAlertRule,
   onToggleAlertRule,
@@ -130,6 +134,11 @@ export function DetailPanel({
         <button className="ghost-button" onClick={onJournal}>
           Journal
         </button>
+        {!isLive ? (
+          <button className="ghost-button" onClick={onRetryBootstrap} disabled={retryingBootstrap}>
+            {retryingBootstrap ? "Retrying…" : "Retry Bootstrap"}
+          </button>
+        ) : null}
       </div>
 
       <div className="saved-drafts-panel">

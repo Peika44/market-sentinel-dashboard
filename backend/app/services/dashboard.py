@@ -193,6 +193,10 @@ class DashboardState:
         self.latest_quotes.pop(ticker_upper, None)
         self._sync_active_tickers()
 
+    def is_tracked(self, user_id: str, ticker: str) -> bool:
+        ticker_upper = ticker.upper()
+        return ticker_upper in self.watchlists.setdefault(user_id, set(DEFAULT_WATCHLIST))
+
     async def hydrate_watchlist_ticker(self, ticker: str) -> None:
         normalized = ticker.strip().upper()
         if not normalized:

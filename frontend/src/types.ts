@@ -41,6 +41,15 @@ export interface MarketOverviewResponse {
   indices: IndexQuote[];
 }
 
+export interface HealthResponse {
+  status: string;
+  service: string;
+  provider: string;
+  feed?: string;
+  cache: string;
+  websocket_clients: number;
+}
+
 export type HistoryRange = "5m" | "1h" | "1D" | "5D" | "1M" | "3M" | "6M" | "1Y";
 
 export interface CandlePoint {

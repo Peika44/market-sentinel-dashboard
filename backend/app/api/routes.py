@@ -26,6 +26,7 @@ def register_routes(app: FastAPI) -> None:
             "status": "ok",
             "service": "backend",
             "provider": app.state.settings.market_data_provider,
+            "feed": getattr(app.state.settings, "alpaca_feed", None),
             "cache": "ok" if cache_ok else "degraded",
             "websocket_clients": websocket_clients,
         }

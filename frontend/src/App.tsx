@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import type {
   AlertRuleDraft,
   DashboardSnapshot,
+  HealthResponse,
   IndexQuote,
   JournalEntryDraft,
   MarketEvent,
@@ -221,6 +222,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
   const [showChart, setShowChart] = useState(false);
   const [tradePlanDraft, setTradePlanDraft] = useState<TradePlanDraft | null>(null);
   const [savedDrafts, setSavedDrafts] = useState<StoredTradePlanDraft[]>([]);
@@ -263,6 +265,12 @@ function App() {
       }
       return next;
     });
+  }
+
+  async function loadHealth() {
+    const response = await fetch("/health");
+    if (!response.ok) throw new Error("Failed to load backend health.");
+    setHealth((await response.json()) as HealthResponse);
   }
 
   async function loadDrafts() {
@@ -335,6 +343,7 @@ function App() {
     setLoading(true);
     try {
       await Promise.all([
+        loadHealth(),
         loadDashboard(),
         loadOverview(),
         loadDrafts(),
@@ -626,6 +635,15 @@ function App() {
     stocks[0] ??
     overviewSelections[0] ??
     null;
+  const selectedStatusLabel = selected
+    ? selected.data_status === "live"
+      ? "Live"
+      : selected.data_status === "delayed"
+        ? "Delayed"
+        : "Waiting"
+    : "Idle";
+  const providerLabel = health?.provider?.toUpperCase() ?? "UNKNOWN";
+  const feedLabel = health?.feed?.toUpperCase() ?? "N/A";
 
   return (
     <div className="app-shell">
@@ -685,6 +703,24 @@ function App() {
       </section>
 
       {error ? <div className="error-banner">{error}</div> : null}
+
+      <section className="source-strip">
+        <div className="source-card">
+          <span className="source-label">Provider</span>
+          <strong>{providerLabel}</strong>
+          <small>Backend market-data provider</small>
+        </div>
+        <div className="source-card">
+          <span className="source-label">Feed</span>
+          <strong>{feedLabel}</strong>
+          <small>Configured stream / bootstrap feed</small>
+        </div>
+        <div className="source-card">
+          <span className="source-label">Selection</span>
+          <strong>{selected ? `${selected.ticker} · ${selectedStatusLabel}` : "No symbol selected"}</strong>
+          <small>{selected?.data_status_message ?? "Select a symbol to inspect its data source state."}</small>
+        </div>
+      </section>
 
       <section className="overview-grid">
         {indices.map((quote) => (

@@ -326,6 +326,38 @@ textarea {
   line-height: 1.45;
 }
 
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-card {
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: grid;
+  gap: 6px;
+}
+
+.summary-label {
+  color: #9aa6b6;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.summary-card strong {
+  color: #f2f5f9;
+  font-size: 1rem;
+}
+
+.summary-card small {
+  color: #b8c4d2;
+  line-height: 1.4;
+}
+
 .overview-grid {
   margin-top: 18px;
   display: grid;
@@ -1066,6 +1098,10 @@ textarea {
   }
 
   .source-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-grid {
     grid-template-columns: 1fr;
   }
 

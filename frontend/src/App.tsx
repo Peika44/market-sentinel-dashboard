@@ -289,6 +289,59 @@ function buildSessionSummary(
   };
 }
 
+function buildDailySummary(
+  session: "pre-market" | "live" | "close",
+  indices: IndexQuote[],
+  stocks: StockCard[],
+  alerts: StoredTriggeredAlert[],
+  notes: StoredTickerNote[],
+): Array<{ label: string; value: string; detail: string }> {
+  const positiveIndices = indices.filter((quote) => quote.change_pct >= 0).length;
+  const indexTone =
+    positiveIndices === indices.length
+      ? "Broad Risk-On"
+      : positiveIndices === 0
+        ? "Broad Risk-Off"
+        : "Mixed Tape";
+
+  const liveStocks = stocks.filter((stock) => stock.data_status === "live");
+  const topUrgency = [...liveStocks]
+    .sort((left, right) => right.urgency_score - left.urgency_score)
+    .slice(0, 3)
+    .map((stock) => stock.ticker)
+    .join(", ") || "No live symbols";
+
+  const recentTriggered = alerts.slice(0, 3).map((alert) => alert.ticker).join(", ") || "No triggers";
+  const tagged = notes.filter((note) => note.payload.strategyTag.trim()).length;
+  const delayed = stocks.filter((stock) => stock.data_status === "delayed").length;
+
+  return [
+    {
+      label: "Index Tone",
+      value: indexTone,
+      detail:
+        session === "pre-market"
+          ? "Use this to frame opening bias before promoting names into active setups."
+          : "Sector and index tone should shape which watchlist names deserve attention first.",
+    },
+    {
+      label: "Top Urgency",
+      value: topUrgency,
+      detail: "Highest-ranked symbols based on the current urgency formula.",
+    },
+    {
+      label: "Alert Pressure",
+      value: recentTriggered,
+      detail: "Most recent triggered alerts that may require review or follow-up.",
+    },
+    {
+      label: "Prep Coverage",
+      value: `${tagged}/${stocks.length} tagged · ${delayed} delayed`,
+      detail: "How much of the board already has strategy context and where feed coverage is still limited.",
+    },
+  ];
+}
+
 function App() {
   const [stocks, setStocks] = useState<StockCard[]>([]);
   const [indices, setIndices] = useState<IndexQuote[]>([]);
@@ -826,6 +879,13 @@ function App() {
         : stocks;
   const strategyGroups = groupStocksByStrategy(sessionFilteredStocks, tickerNotes);
   const sessionSummary = buildSessionSummary(sessionView, stocks, tickerNotes);
+  const dailySummary = buildDailySummary(
+    sessionView,
+    indices,
+    stocks,
+    triggeredAlerts,
+    tickerNotes,
+  );
 
   useEffect(() => {
     if (!selected || selected.data_status === "live") {
@@ -963,6 +1023,15 @@ function App() {
         <div className="session-summary">
           <strong>{sessionSummary.title}</strong>
           <span>{sessionSummary.body}</span>
+        </div>
+        <div className="summary-grid">
+          {dailySummary.map((item) => (
+            <article key={item.label} className="summary-card">
+              <span className="summary-label">{item.label}</span>
+              <strong>{item.value}</strong>
+              <small>{item.detail}</small>
+            </article>
+          ))}
         </div>
       </section>
 

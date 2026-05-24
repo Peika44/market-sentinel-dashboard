@@ -358,6 +358,28 @@ textarea {
   line-height: 1.4;
 }
 
+.digest-card {
+  border-radius: 20px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  gap: 14px;
+}
+
+.digest-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.digest-summary {
+  margin: 0;
+  color: #d4dde8;
+  line-height: 1.5;
+}
+
 .overview-grid {
   margin-top: 18px;
   display: grid;

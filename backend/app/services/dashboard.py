@@ -14,6 +14,8 @@ from app.core.config import settings
 from app.domain.models import (
     CandlePoint,
     DashboardSnapshot,
+    DigestMetric,
+    EndOfDayDigest,
     IndexQuote,
     MarketEvent,
     StockCard,
@@ -947,6 +949,76 @@ class DashboardState:
         price_component = min(abs(change_pct) * urgency_settings.priceMoveScale, 100.0) * normalized_price_weight
         sentiment_component = (1.0 - sentiment_score) * 100.0 * normalized_sentiment_weight
         return round(min(price_component + sentiment_component, 100.0), 2)
+
+    async def build_end_of_day_digest(
+        self,
+        user_id: str,
+        alerts: list[dict],
+        journal: list[dict],
+    ) -> EndOfDayDigest:
+        snapshot = self.build_snapshot(user_id)
+        overview = await self.build_overview()
+        notes = self.list_ticker_notes(user_id)
+
+        positive_indices = sum(1 for quote in overview if quote.change_pct >= 0)
+        if positive_indices == len(overview):
+            tone = "Broad Risk-On"
+        elif positive_indices == 0:
+            tone = "Broad Risk-Off"
+        else:
+            tone = "Mixed Tape"
+
+        live_stocks = [stock for stock in snapshot.stocks if stock.data_status == "live"]
+        top_urgency = ", ".join(stock.ticker for stock in live_stocks[:3]) or "No live symbols"
+        recent_alerts = ", ".join(alert["ticker"] for alert in alerts[:3]) or "No recent triggers"
+        tagged = sum(1 for note in notes if str(note["payload"].get("strategyTag", "")).strip())
+        delayed = sum(1 for stock in snapshot.stocks if stock.data_status == "delayed")
+        recent_journal = ", ".join(entry["ticker"] for entry in journal[:3]) or "No recent journal updates"
+
+        metrics = [
+            DigestMetric(
+                label="Index Tone",
+                value=tone,
+                detail="Broad market context from SPY, QQQ, and IWM.",
+            ),
+            DigestMetric(
+                label="Top Urgency",
+                value=top_urgency,
+                detail="Highest-ranked live names on the board.",
+            ),
+            DigestMetric(
+                label="Alert Pressure",
+                value=recent_alerts,
+                detail="Most recent triggered alerts worth reviewing.",
+            ),
+            DigestMetric(
+                label="Prep Coverage",
+                value=f"{tagged}/{len(snapshot.stocks)} tagged · {delayed} delayed",
+                detail="How much of the board is prepared and how much still has limited feed coverage.",
+            ),
+            DigestMetric(
+                label="Journal Loop",
+                value=recent_journal,
+                detail="Most recent symbols with journal activity.",
+            ),
+        ]
+
+        return EndOfDayDigest(
+            user_id=user_id,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            headline="End-of-Day Digest",
+            summary=(
+                f"{tone}. Review {top_urgency} first, then check {recent_alerts} and fill any gaps in notes or journal coverage."
+            ),
+            metrics=metrics,
+        )
+
+    @staticmethod
+    def render_end_of_day_digest_text(digest: EndOfDayDigest) -> str:
+        lines = [digest.summary]
+        for metric in digest.metrics:
+            lines.append(f"{metric.label}: {metric.value} - {metric.detail}")
+        return "\n".join(lines)
 
     def flush_history_to_db(self) -> None:
         """Persist all in-memory price deques to SQLite. Safe to call from any thread."""

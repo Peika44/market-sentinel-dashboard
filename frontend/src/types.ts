@@ -161,3 +161,17 @@ export interface StoredUrgencySettings {
   updated_at: string;
   payload: UrgencySettingsDraft;
 }
+
+export interface DigestMetric {
+  label: string;
+  value: string;
+  detail: string;
+}
+
+export interface EndOfDayDigest {
+  user_id: string;
+  generated_at: string;
+  headline: string;
+  summary: string;
+  metrics: DigestMetric[];
+}

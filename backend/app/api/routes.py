@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
+    EndOfDayDigest,
     SaveJournalEntryRequest,
     SaveAlertRuleRequest,
     SaveTickerNoteRequest,
@@ -231,6 +232,21 @@ def register_routes(app: FastAPI) -> None:
             updated_at,
         )
         return {"ok": True, "updated_at": updated_at}
+
+    @app.get("/api/digest/{user_id}", response_model=EndOfDayDigest)
+    async def get_end_of_day_digest(user_id: str):
+        alerts = app.state.alert_engine.list_triggered_alerts(user_id, limit=5, offset=0)
+        journal = app.state.dashboard_state.list_journal_entries(user_id, limit=3, offset=0)
+        return await app.state.dashboard_state.build_end_of_day_digest(user_id, alerts, journal)
+
+    @app.post("/api/digest/{user_id}/send")
+    async def send_end_of_day_digest(user_id: str, channel: str = "discord"):
+        alerts = app.state.alert_engine.list_triggered_alerts(user_id, limit=5, offset=0)
+        journal = app.state.dashboard_state.list_journal_entries(user_id, limit=3, offset=0)
+        digest = await app.state.dashboard_state.build_end_of_day_digest(user_id, alerts, journal)
+        body = app.state.dashboard_state.render_end_of_day_digest_text(digest)
+        app.state.notifier.send(channel, f"End-of-Day Digest · {user_id}", body)
+        return {"ok": True, "channel": channel, "generated_at": digest.generated_at}
 
     @app.get("/api/stocks/{ticker}/history")
     async def get_stock_history(ticker: str, range: str = "1M"):

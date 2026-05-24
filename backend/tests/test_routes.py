@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import register_routes
-from app.domain.models import DashboardSnapshot, StockCard, TickerValidationResult
+from app.domain.models import DashboardSnapshot, EndOfDayDigest, StockCard, TickerValidationResult
 
 
 def build_snapshot(
@@ -73,6 +73,18 @@ class FakeDashboardState:
                 "highThreshold": 70.0,
             },
         }
+        self.digest = EndOfDayDigest.model_validate(
+            {
+                "user_id": "demo-user",
+                "generated_at": "2026-05-23T23:59:00Z",
+                "headline": "End-of-Day Digest",
+                "summary": "Mixed Tape. Review NVDA, TSLA, and AAPL first.",
+                "metrics": [
+                    {"label": "Index Tone", "value": "Mixed Tape", "detail": "Broad market context."},
+                    {"label": "Top Urgency", "value": "NVDA, TSLA, AAPL", "detail": "Highest-ranked live names."},
+                ],
+            }
+        )
 
     async def validate_ticker(self, ticker: str) -> TickerValidationResult:
         self.calls.append(("validate", ticker))
@@ -111,6 +123,10 @@ class FakeDashboardState:
         self.calls.append(("list-notes", user_id))
         return [self.note]
 
+    def list_journal_entries(self, user_id: str, limit: int = 12, offset: int = 0):
+        self.calls.append(("list-journal", user_id))
+        return []
+
     def save_ticker_note(self, user_id: str, payload: dict, updated_at: str) -> None:
         self.calls.append(("save-note", f"{user_id}:{payload['ticker']}"))
         self.note = {
@@ -130,6 +146,14 @@ class FakeDashboardState:
             "payload": payload,
         }
 
+    async def build_end_of_day_digest(self, user_id: str, alerts: list[dict], journal: list[dict]):
+        self.calls.append(("build-digest", user_id))
+        return self.digest
+
+    def render_end_of_day_digest_text(self, digest: EndOfDayDigest) -> str:
+        self.calls.append(("render-digest", digest.user_id))
+        return digest.summary
+
 
 class RouteTests(unittest.TestCase):
     def make_client(self, dashboard_state: FakeDashboardState) -> TestClient:
@@ -139,6 +163,7 @@ class RouteTests(unittest.TestCase):
         app.state.alert_engine = SimpleNamespace(list_triggered_alerts=lambda *args, **kwargs: [])
         app.state.cache = SimpleNamespace(ping=lambda: True)
         app.state.settings = SimpleNamespace(market_data_provider="alpaca")
+        app.state.notifier = SimpleNamespace(send=lambda channel, title, body: dashboard_state.calls.append(("send-digest", channel)))
         app.state.websocket_hub = SimpleNamespace(_connections=set())
         return TestClient(app)
 
@@ -444,6 +469,57 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(state.calls[0], ("save-urgency", "demo-user"))
         self.assertEqual(state.urgency_settings["payload"]["highThreshold"], 75)
+
+    def test_get_end_of_day_digest_returns_preview_payload(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.get("/api/digest/demo-user")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["headline"], "End-of-Day Digest")
+        self.assertEqual(
+            state.calls,
+            [("list-journal", "demo-user"), ("build-digest", "demo-user")],
+        )
+
+    def test_send_end_of_day_digest_uses_notifier(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.post("/api/digest/demo-user/send?channel=discord")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            state.calls,
+            [
+                ("list-journal", "demo-user"),
+                ("build-digest", "demo-user"),
+                ("render-digest", "demo-user"),
+                ("send-digest", "discord"),
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useState } from "react";
 import type {
   AlertRuleDraft,
   DashboardSnapshot,
+  EndOfDayDigest,
   HealthResponse,
   IndexQuote,
   JournalEntryDraft,
@@ -361,6 +362,8 @@ function App() {
   const [savingUrgencySettings, setSavingUrgencySettings] = useState(false);
   const [tradePlanDraft, setTradePlanDraft] = useState<TradePlanDraft | null>(null);
   const [retryingBootstrap, setRetryingBootstrap] = useState(false);
+  const [digest, setDigest] = useState<EndOfDayDigest | null>(null);
+  const [sendingDigest, setSendingDigest] = useState(false);
   const [savedDrafts, setSavedDrafts] = useState<StoredTradePlanDraft[]>([]);
   const [savingDraft, setSavingDraft] = useState(false);
   const [alertRuleDraft, setAlertRuleDraft] = useState<AlertRuleDraft | null>(null);
@@ -499,6 +502,12 @@ function App() {
     setTickerNotes((await response.json()) as StoredTickerNote[]);
   }
 
+  async function loadDigest() {
+    const response = await fetch(`/api/digest/${DEMO_USER_ID}`);
+    if (!response.ok) throw new Error("Failed to load end-of-day digest.");
+    setDigest((await response.json()) as EndOfDayDigest);
+  }
+
   async function refresh() {
     setError(null);
     setLoading(true);
@@ -513,6 +522,7 @@ function App() {
         loadTriggeredAlerts(),
         loadJournalEntries(),
         loadTickerNotes(),
+        loadDigest(),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard refresh failed.");
@@ -784,6 +794,21 @@ function App() {
     }
   }
 
+  async function sendDigest() {
+    setSendingDigest(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/digest/${DEMO_USER_ID}/send?channel=discord`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error("Failed to send end-of-day digest.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send end-of-day digest.");
+    } finally {
+      setSendingDigest(false);
+    }
+  }
+
   useEffect(() => {
     let destroyed = false;
     let retryDelay = 1_000;
@@ -1033,6 +1058,34 @@ function App() {
             </article>
           ))}
         </div>
+        {sessionView === "close" && digest ? (
+          <div className="digest-card">
+            <div className="digest-header">
+              <div>
+                <span className="summary-label">{digest.headline}</span>
+                <strong>{new Date(digest.generated_at).toLocaleString()}</strong>
+              </div>
+              <div className="inline-action-row">
+                <button className="ghost-button" onClick={() => void loadDigest()}>
+                  Refresh Digest
+                </button>
+                <button className="refresh-button" onClick={() => void sendDigest()} disabled={sendingDigest}>
+                  {sendingDigest ? "Sending..." : "Send to Discord"}
+                </button>
+              </div>
+            </div>
+            <p className="digest-summary">{digest.summary}</p>
+            <div className="summary-grid">
+              {digest.metrics.map((item) => (
+                <article key={item.label} className="summary-card">
+                  <span className="summary-label">{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <small>{item.detail}</small>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="overview-grid">

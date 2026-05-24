@@ -243,6 +243,20 @@ class StoredUrgencySettings(BaseModel):
     payload: UrgencySettingsPayload
 
 
+class DigestMetric(BaseModel):
+    label: str
+    value: str
+    detail: str
+
+
+class EndOfDayDigest(BaseModel):
+    user_id: str
+    generated_at: str
+    headline: str
+    summary: str
+    metrics: list[DigestMetric] = Field(default_factory=list)
+
+
 class IndexQuote(BaseModel):
     ticker: str
     label: str

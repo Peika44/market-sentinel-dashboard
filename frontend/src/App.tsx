@@ -39,6 +39,11 @@ const DEMO_USER_ID = "demo-user";
 const OVERVIEW_TICKERS = new Set(["SPY", "QQQ", "IWM"]);
 const ALERTS_PAGE = 5;
 const JOURNAL_PAGE = 5;
+const SESSION_OPTIONS = [
+  { id: "pre-market", label: "Pre-Market" },
+  { id: "live", label: "Live" },
+  { id: "close", label: "Close" },
+] as const;
 const DEFAULT_URGENCY_SETTINGS: UrgencySettingsDraft = {
   priceWeightPct: 65,
   sentimentWeightPct: 35,
@@ -258,6 +263,32 @@ function groupStocksByStrategy(
     }));
 }
 
+function buildSessionSummary(
+  session: "pre-market" | "live" | "close",
+  stocks: StockCard[],
+  notes: StoredTickerNote[],
+): { title: string; body: string } {
+  if (session === "pre-market") {
+    const tagged = notes.filter((note) => note.payload.strategyTag.trim()).length;
+    return {
+      title: "Plan the board before the bell",
+      body: `${tagged} symbols already have a strategy tag. Use notes and thesis fields to shape the opening watchlist.`,
+    };
+  }
+  if (session === "close") {
+    const delayed = stocks.filter((stock) => stock.data_status === "delayed").length;
+    return {
+      title: "Review the session and tighten notes",
+      body: `${delayed} symbols are still on delayed coverage. This is a good time to update notes, alerts, and journal entries before tomorrow.`,
+    };
+  }
+  const live = stocks.filter((stock) => stock.data_status === "live").length;
+  return {
+    title: "Run the active session",
+    body: `${live} symbols are live right now. Prioritize the highest-urgency names and keep notes current as setups evolve.`,
+  };
+}
+
 function App() {
   const [stocks, setStocks] = useState<StockCard[]>([]);
   const [indices, setIndices] = useState<IndexQuote[]>([]);
@@ -270,6 +301,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [sessionView, setSessionView] = useState<"pre-market" | "live" | "close">("live");
   const [showChart, setShowChart] = useState(false);
   const [showUrgencySettings, setShowUrgencySettings] = useState(false);
   const [urgencySettings, setUrgencySettings] = useState<UrgencySettingsDraft>(DEFAULT_URGENCY_SETTINGS);
@@ -518,6 +550,10 @@ function App() {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    setSessionView(marketStatus.session);
+  }, [marketStatus.session]);
 
   useEffect(() => {
     if (!normalizedTickerInput) {
@@ -782,7 +818,14 @@ function App() {
     : "Idle";
   const providerLabel = health?.provider?.toUpperCase() ?? "UNKNOWN";
   const feedLabel = health?.feed?.toUpperCase() ?? "N/A";
-  const strategyGroups = groupStocksByStrategy(stocks, tickerNotes);
+  const sessionFilteredStocks =
+    sessionView === "pre-market"
+      ? stocks.filter((stock) => stock.data_status !== "live" || tickerNotes.some((note) => note.ticker === stock.ticker))
+      : sessionView === "close"
+        ? [...stocks].sort((left, right) => left.ticker.localeCompare(right.ticker))
+        : stocks;
+  const strategyGroups = groupStocksByStrategy(sessionFilteredStocks, tickerNotes);
+  const sessionSummary = buildSessionSummary(sessionView, stocks, tickerNotes);
 
   useEffect(() => {
     if (!selected || selected.data_status === "live") {
@@ -902,6 +945,24 @@ function App() {
           <span className="source-label">Selection</span>
           <strong>{selected ? `${selected.ticker} · ${selectedStatusLabel}` : "No symbol selected"}</strong>
           <small>{selected?.data_status_message ?? "Select a symbol to inspect its data source state."}</small>
+        </div>
+      </section>
+
+      <section className="session-strip">
+        <div className="session-tabs">
+          {SESSION_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              className={`session-pill ${sessionView === option.id ? "selected" : ""}`}
+              onClick={() => setSessionView(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="session-summary">
+          <strong>{sessionSummary.title}</strong>
+          <span>{sessionSummary.body}</span>
         </div>
       </section>
 

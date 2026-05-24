@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 export interface MarketStatus {
   isOpen: boolean;
   label: string;
+  session: "pre-market" | "live" | "close";
 }
 
 function getMarketStatus(): MarketStatus {
@@ -23,7 +24,7 @@ function getMarketStatus(): MarketStatus {
   const timeValue = hour * 60 + minute;
 
   if (weekday === "Sat" || weekday === "Sun") {
-    return { isOpen: false, label: "Closed" };
+    return { isOpen: false, label: "Closed", session: "close" };
   }
 
   const preMarket = 4 * 60;
@@ -32,18 +33,18 @@ function getMarketStatus(): MarketStatus {
   const afterHours = 20 * 60;
 
   if (timeValue >= open && timeValue < close) {
-    return { isOpen: true, label: "Open" };
+    return { isOpen: true, label: "Open", session: "live" };
   }
 
   if (timeValue >= preMarket && timeValue < open) {
-    return { isOpen: false, label: "Pre-Market" };
+    return { isOpen: false, label: "Pre-Market", session: "pre-market" };
   }
 
   if (timeValue >= close && timeValue < afterHours) {
-    return { isOpen: false, label: "After-Hours" };
+    return { isOpen: false, label: "After-Hours", session: "close" };
   }
 
-  return { isOpen: false, label: "Closed" };
+  return { isOpen: false, label: "Closed", session: "close" };
 }
 
 export function useMarketStatus(): MarketStatus {

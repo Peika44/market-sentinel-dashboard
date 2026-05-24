@@ -56,6 +56,8 @@ export function AlertRuleModal({
               <option value="urgency_above">Urgency Above</option>
               <option value="price_change_above">Price Change Above %</option>
               <option value="price_change_below">Price Change Below %</option>
+              <option value="gap_up_above">Gap Up Above %</option>
+              <option value="gap_down_below">Gap Down Below %</option>
               <option value="volume_above">Volume Above</option>
               <option value="target_hit">Target Hit</option>
               <option value="drop_below_stop">Drop Below Stop</option>

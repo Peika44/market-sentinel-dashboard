@@ -7,6 +7,8 @@ _VALID_CONDITIONS = {
     "urgency_above",
     "price_change_above",
     "price_change_below",
+    "gap_up_above",
+    "gap_down_below",
     "volume_above",
     "target_hit",
     "drop_below_stop",

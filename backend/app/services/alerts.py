@@ -69,6 +69,18 @@ class AlertEngine:
                     message = (
                         f"{event.ticker} price change dropped to {event.change_pct:.2f}%."
                     )
+            elif payload.condition == "gap_up_above":
+                if event.change_pct >= threshold:
+                    triggered_value = event.change_pct
+                    message = (
+                        f"{event.ticker} gapped up {event.change_pct:.2f}% or more."
+                    )
+            elif payload.condition == "gap_down_below":
+                if event.change_pct <= -threshold:
+                    triggered_value = event.change_pct
+                    message = (
+                        f"{event.ticker} gapped down {abs(event.change_pct):.2f}% or more."
+                    )
             elif payload.condition == "volume_above":
                 if float(event.volume) >= threshold:
                     triggered_value = float(event.volume)

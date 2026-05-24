@@ -30,6 +30,9 @@ export function alertThresholdHelp(condition: string): string {
   if (condition === "price_change_above" || condition === "price_change_below") {
     return "Threshold is a percent change value, e.g. 2 means 2%.";
   }
+  if (condition === "gap_up_above" || condition === "gap_down_below") {
+    return "Threshold is a gap percentage value, e.g. 3 means 3%.";
+  }
   if (condition === "volume_above") {
     return "Threshold is a raw share volume number, e.g. 500000.";
   }

@@ -51,6 +51,15 @@ export function JournalModal({
               <option value="closed">Closed</option>
             </select>
           </label>
+          <label>
+            Outcome Tag
+            <select value={draft.outcomeTag} onChange={field("outcomeTag")}>
+              <option value="open">Open</option>
+              <option value="win">Win</option>
+              <option value="loss">Loss</option>
+              <option value="scratch">Scratch</option>
+            </select>
+          </label>
           <label className="trade-plan-wide">
             Thesis
             <textarea value={draft.thesis} onChange={field("thesis")} />

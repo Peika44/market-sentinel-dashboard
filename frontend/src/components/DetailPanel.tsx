@@ -1,10 +1,12 @@
 import type {
   AlertRuleDraft,
+  AlertTaskStatus,
   StockCard,
   StoredAlertRule,
   StoredJournalEntry,
   StoredTickerNote,
   StoredTriggeredAlert,
+  ThesisOutcomeSummary,
   StoredTradePlanDraft,
   TickerNoteDraft,
   TradePlanDraft,
@@ -18,6 +20,7 @@ interface DetailPanelProps {
   groupedAlerts: Array<{ ticker: string; rules: StoredAlertRule[] }>;
   triggeredAlerts: StoredTriggeredAlert[];
   savedJournalEntries: StoredJournalEntry[];
+  thesisOutcomeSummary: ThesisOutcomeSummary | null;
   tickerNote: StoredTickerNote | null;
   editingNote: TickerNoteDraft | null;
   savingTickerNote: boolean;
@@ -37,7 +40,172 @@ interface DetailPanelProps {
   onDeleteAlertRule: (ruleId: string) => void;
   onLoadMoreAlerts: () => void;
   onLoadMoreJournal: () => void;
+  onUpdateAlertTask: (alertId: string, status: AlertTaskStatus, snoozedUntil?: string) => void;
 }
+
+// ─── Alert Task Card ────────────────────────────────────────────────────────
+
+function resolvedTaskStatus(alert: StoredTriggeredAlert): AlertTaskStatus {
+  const status = alert.payload.task_status ?? "pending";
+  if (status === "snoozed" && alert.payload.snoozed_until) {
+    const expiry = new Date(alert.payload.snoozed_until).getTime();
+    if (Date.now() >= expiry) return "pending";
+  }
+  return status;
+}
+
+interface AlertTaskListProps {
+  triggeredAlerts: StoredTriggeredAlert[];
+  hasMoreAlerts: boolean;
+  onShowChart: () => void;
+  onTradePlan: () => void;
+  onLoadMoreAlerts: () => void;
+  onUpdateAlertTask: (alertId: string, status: AlertTaskStatus, snoozedUntil?: string) => void;
+}
+
+function AlertTaskList({
+  triggeredAlerts,
+  hasMoreAlerts,
+  onShowChart,
+  onTradePlan,
+  onLoadMoreAlerts,
+  onUpdateAlertTask,
+}: AlertTaskListProps) {
+  const active = triggeredAlerts.filter((a) => resolvedTaskStatus(a) !== "dismissed");
+  const dismissedCount = triggeredAlerts.length - active.length;
+
+  function snooze15min(alertId: string) {
+    const until = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    onUpdateAlertTask(alertId, "snoozed", until);
+  }
+
+  return (
+    <div className="saved-drafts-panel">
+      <div className="alert-task-header">
+        <p className="eyebrow">Alert Tasks</p>
+        {dismissedCount > 0 && (
+          <span className="alert-dismissed-count">{dismissedCount} dismissed</span>
+        )}
+      </div>
+      {active.length === 0 ? (
+        <p className="draft-empty-state">No active alert tasks.</p>
+      ) : (
+        <div className="saved-drafts-list">
+          {active.map((alert) => {
+            const status = resolvedTaskStatus(alert);
+            const alertId = alert.payload.alert_id;
+            const isLegacy = !alertId;
+            const isSnoozed = status === "snoozed";
+            const isActed = status === "acted";
+            const isPending = status === "pending";
+
+            const triggeredTime = new Date(alert.triggered_at);
+            const timeLabel = triggeredTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            const snoozedUntilLabel = isSnoozed && alert.payload.snoozed_until
+              ? new Date(alert.payload.snoozed_until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              : null;
+
+            return (
+              <div
+                key={`${alert.ticker}-${alert.triggered_at}`}
+                className={`alert-task-card ${isSnoozed ? "snoozed" : ""} ${isActed ? "acted" : ""}`}
+              >
+                <div className="alert-task-top">
+                  <div className="triggered-alert-header">
+                    <span className="triggered-alert-badge">
+                      {formatAlertCondition(alert.payload.condition)}
+                    </span>
+                    <span className="triggered-alert-time">{timeLabel}</span>
+                  </div>
+                  {isPending && (
+                    <span className="alert-task-status-pill pending">Needs action</span>
+                  )}
+                  {isSnoozed && snoozedUntilLabel && (
+                    <span className="alert-task-status-pill snoozed">Snoozed until {snoozedUntilLabel}</span>
+                  )}
+                  {isActed && (
+                    <span className="alert-task-status-pill acted">Acted on</span>
+                  )}
+                </div>
+
+                <p className="alert-task-message">{alert.payload.message}</p>
+
+                {(alert.payload.snapshot_price != null ||
+                  alert.payload.snapshot_change_pct != null ||
+                  alert.payload.snapshot_volume != null) && (
+                  <div className="alert-task-snapshot">
+                    {alert.payload.snapshot_price != null && (
+                      <span>@ ${alert.payload.snapshot_price.toFixed(2)}</span>
+                    )}
+                    {alert.payload.snapshot_change_pct != null && (
+                      <span
+                        className={alert.payload.snapshot_change_pct >= 0 ? "positive" : "negative"}
+                      >
+                        {alert.payload.snapshot_change_pct >= 0 ? "+" : ""}
+                        {alert.payload.snapshot_change_pct.toFixed(2)}%
+                      </span>
+                    )}
+                    {alert.payload.snapshot_volume != null && (
+                      <span>Vol {(alert.payload.snapshot_volume / 1_000_000).toFixed(1)}M</span>
+                    )}
+                  </div>
+                )}
+
+                {!isLegacy && isPending && (
+                  <div className="alert-task-actions">
+                    <button
+                      className="alert-action-btn primary"
+                      onClick={() => {
+                        onShowChart();
+                        onUpdateAlertTask(alertId, "acted");
+                      }}
+                    >
+                      Chart
+                    </button>
+                    <button
+                      className="alert-action-btn primary"
+                      onClick={() => {
+                        onTradePlan();
+                        onUpdateAlertTask(alertId, "acted");
+                      }}
+                    >
+                      Build Plan
+                    </button>
+                    <button
+                      className="alert-action-btn"
+                      onClick={() => snooze15min(alertId)}
+                    >
+                      +15 min
+                    </button>
+                    <button
+                      className="alert-action-btn dismiss"
+                      onClick={() => onUpdateAlertTask(alertId, "dismissed")}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+                {isLegacy && (
+                  <div className="alert-task-actions">
+                    <button className="alert-action-btn primary" onClick={onShowChart}>Chart</button>
+                    <button className="alert-action-btn primary" onClick={onTradePlan}>Build Plan</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {hasMoreAlerts && (
+            <button className="ghost-button load-more-button" onClick={onLoadMoreAlerts}>
+              Load more
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Panel ─────────────────────────────────────────────────────────────
 
 export function DetailPanel({
   selected,
@@ -45,6 +213,7 @@ export function DetailPanel({
   groupedAlerts,
   triggeredAlerts,
   savedJournalEntries,
+  thesisOutcomeSummary,
   tickerNote,
   editingNote,
   savingTickerNote,
@@ -64,6 +233,7 @@ export function DetailPanel({
   onDeleteAlertRule,
   onLoadMoreAlerts,
   onLoadMoreJournal,
+  onUpdateAlertTask,
 }: DetailPanelProps) {
   if (!selected) {
     return (
@@ -206,6 +376,40 @@ export function DetailPanel({
       </div>
 
       <div className="saved-drafts-panel">
+        <p className="eyebrow">Thesis vs Outcome</p>
+        {thesisOutcomeSummary ? (
+          <div className="thesis-summary-grid">
+            <div className="saved-draft-item">
+              <strong>Current Thesis</strong>
+              <span>{thesisOutcomeSummary.current_thesis || "No thesis saved yet."}</span>
+              <span className="triggered-alert-time">
+                {thesisOutcomeSummary.strategy_tag
+                  ? `Strategy: ${thesisOutcomeSummary.strategy_tag}`
+                  : "No strategy tag assigned."}
+              </span>
+            </div>
+            <div className="saved-draft-item">
+              <strong>Latest Outcome</strong>
+              <span>{thesisOutcomeSummary.latest_outcome || "No closed trade outcome yet."}</span>
+              <span className="triggered-alert-time">
+                Tag: {thesisOutcomeSummary.latest_outcome_tag}
+              </span>
+              {thesisOutcomeSummary.latest_review ? <span>{thesisOutcomeSummary.latest_review}</span> : null}
+            </div>
+            <div className="saved-draft-item">
+              <strong>Closed Setups</strong>
+              <span>{thesisOutcomeSummary.total_closed_entries}</span>
+              <span className="triggered-alert-time">
+                Wins {thesisOutcomeSummary.win_count} · Losses {thesisOutcomeSummary.loss_count} · Scratch {thesisOutcomeSummary.scratch_count}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <p className="draft-empty-state">Select a ticker to load thesis/outcome history.</p>
+        )}
+      </div>
+
+      <div className="saved-drafts-panel">
         <p className="eyebrow">Saved Drafts</p>
         {savedDrafts.length === 0 ? (
           <p className="draft-empty-state">No saved trade-plan drafts yet.</p>
@@ -277,37 +481,14 @@ export function DetailPanel({
         )}
       </div>
 
-      <div className="saved-drafts-panel">
-        <p className="eyebrow">Recent Triggered Alerts</p>
-        {triggeredAlerts.length === 0 ? (
-          <p className="draft-empty-state">No alerts have triggered yet.</p>
-        ) : (
-          <div className="saved-drafts-list">
-            {triggeredAlerts.map((alert) => (
-              <div
-                key={`${alert.ticker}-${alert.triggered_at}-${alert.payload.condition}`}
-                className="saved-draft-item"
-              >
-                <div className="triggered-alert-header">
-                  <strong>{alert.ticker}</strong>
-                  <span className="triggered-alert-badge">
-                    {formatAlertCondition(alert.payload.condition)}
-                  </span>
-                </div>
-                <span>{alert.payload.message}</span>
-                <span className="triggered-alert-time">
-                  {new Date(alert.triggered_at).toLocaleString()}
-                </span>
-              </div>
-            ))}
-            {hasMoreAlerts && (
-              <button className="ghost-button load-more-button" onClick={onLoadMoreAlerts}>
-                Load more
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+      <AlertTaskList
+        triggeredAlerts={triggeredAlerts}
+        hasMoreAlerts={hasMoreAlerts}
+        onShowChart={onShowChart}
+        onTradePlan={onTradePlan}
+        onLoadMoreAlerts={onLoadMoreAlerts}
+        onUpdateAlertTask={onUpdateAlertTask}
+      />
 
       <div className="saved-drafts-panel">
         <p className="eyebrow">Recent Journal Entries</p>

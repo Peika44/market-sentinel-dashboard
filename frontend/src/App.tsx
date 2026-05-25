@@ -2,22 +2,37 @@ import { FormEvent, useEffect, useState } from "react";
 
 import type {
   AlertRuleDraft,
+  AlertTaskStatus,
+  BoardFilters,
+  CatalystEventDraft,
   DashboardSnapshot,
   EndOfDayDigest,
+  FocusQueueBucket,
+  FocusQueueEntryDraft,
+  FocusQueueEntryView,
   HealthResponse,
   IndexQuote,
   JournalEntryDraft,
+  LeaderHoldingDraft,
   MarketEvent,
   MarketOverviewResponse,
+  ReviewMetrics,
+  SavedFilterPreset,
   StoredAlertRule,
+  StoredCatalystEvent,
   StoredJournalEntry,
+  StoredLeaderHolding,
   StoredTickerNote,
   StoredUrgencySettings,
   StockCard,
+  StoredTrade,
   StoredTradePlanDraft,
   StoredTriggeredAlert,
+  ThesisOutcomeSummary,
   TickerNoteDraft,
   TickerValidationResult,
+  TradeDraft,
+  TradeFilters,
   TradePlanDraft,
   UrgencySettingsDraft,
 } from "./types";
@@ -28,6 +43,9 @@ import { AlertRuleModal } from "./components/AlertRuleModal";
 import { JournalModal } from "./components/JournalModal";
 import { DetailPanel } from "./components/DetailPanel";
 import { UrgencySettingsModal } from "./components/UrgencySettingsModal";
+import { TradeLifecyclePanel } from "./components/TradeLifecyclePanel";
+import { ReviewPanel } from "./components/ReviewPanel";
+import { FilterStrip } from "./components/FilterStrip";
 import {
   formatAlertCondition,
   formatChangePct,
@@ -45,6 +63,17 @@ const SESSION_OPTIONS = [
   { id: "live", label: "Live" },
   { id: "close", label: "Close" },
 ] as const;
+const VIEW_OPTIONS = [
+  { id: "overview", label: "Overview" },
+  { id: "board", label: "Watchlist" },
+  { id: "workspace", label: "Workspace" },
+  { id: "leader", label: "Leader" },
+  { id: "catalysts", label: "Catalysts" },
+  { id: "trades", label: "Trades" },
+  { id: "review", label: "Review" },
+] as const;
+type SessionView = (typeof SESSION_OPTIONS)[number]["id"];
+type MainView = (typeof VIEW_OPTIONS)[number]["id"];
 const DEFAULT_URGENCY_SETTINGS: UrgencySettingsDraft = {
   priceWeightPct: 65,
   sentimentWeightPct: 35,
@@ -52,6 +81,30 @@ const DEFAULT_URGENCY_SETTINGS: UrgencySettingsDraft = {
   lowThreshold: 40,
   highThreshold: 70,
 };
+
+const DEFAULT_BOARD_FILTERS: BoardFilters = { status: "all", minUrgency: "any", hasCatalyst: false };
+const DEFAULT_TRADE_FILTERS: TradeFilters = { setupType: "all", stage: "all", outcomeTag: "all" };
+const LS_BOARD_FILTERS = "msd:board-filters";
+const LS_TRADE_FILTERS = "msd:trade-filters";
+const LS_PRESETS = "msd:filter-presets";
+
+function loadFromStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveToStorage<T>(key: string, value: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function computeUrgency(
   settings: UrgencySettingsDraft,
@@ -96,12 +149,20 @@ function buildTradePlanDraft(stock: StockCard): TradePlanDraft {
   const entry = stock.current_price ?? 0;
   return {
     ticker: stock.ticker,
+    setupType: "breakout",
     entryPrice: entry.toFixed(2),
     stopLoss: (entry * 0.97).toFixed(2),
     targetPrice: (entry * 1.06).toFixed(2),
     thesis: `${stock.ticker} is ranked high on the dashboard with ${stock.sentiment_label.toLowerCase()} sentiment and an urgency score of ${stock.urgency_score.toFixed(0)}.`,
     riskPercent: "1.0",
     positionSizeUsd: "1000",
+    checklist: {
+      hasCatalyst: false,
+      atKeyLevel: false,
+      rrSufficient: false,
+      marketAligned: false,
+      withinSession: false,
+    },
   };
 }
 
@@ -145,6 +206,7 @@ function buildJournalDraft(stock: StockCard): JournalEntryDraft {
     thesis: `${stock.ticker} remains on the dashboard because of its current urgency and sentiment profile.`,
     review: "",
     outcome: "",
+    outcomeTag: "open",
     entryPrice: "",
     stopLoss: "",
     targetPrice: "",
@@ -158,6 +220,7 @@ function buildJournalFromTradePlan(draft: TradePlanDraft): JournalEntryDraft {
     thesis: draft.thesis,
     review: "",
     outcome: "",
+    outcomeTag: "open",
     entryPrice: draft.entryPrice,
     stopLoss: draft.stopLoss,
     targetPrice: draft.targetPrice,
@@ -264,6 +327,54 @@ function groupStocksByStrategy(
     }));
 }
 
+function focusBucketLabel(bucket: FocusQueueBucket): string {
+  if (bucket === "today_focus") return "Today Focus";
+  if (bucket === "monitor") return "Monitor";
+  return "Ignore for now";
+}
+
+function focusBucketDescription(bucket: FocusQueueBucket): string {
+  if (bucket === "today_focus") return "Names that deserve active screen time and decision energy.";
+  if (bucket === "monitor") return "Names worth tracking, but not yet primary action items.";
+  return "Names to intentionally de-prioritize until the setup improves.";
+}
+
+function buildEmptyLeaderHolding(ticker = ""): LeaderHoldingDraft {
+  return {
+    ticker,
+    positionStatus: "holding",
+    conviction: "standard",
+    timeHorizon: "swing",
+    entryZone: "",
+    thesis: "",
+    invalidatedWhen: "",
+    lastUpdatedAt: "",
+  };
+}
+
+function buildEmptyCatalystEvent(ticker = ""): CatalystEventDraft {
+  return {
+    scope: ticker ? "ticker" : "macro",
+    ticker,
+    eventType: ticker ? "earnings" : "macro_cpi",
+    headline: "",
+    eventDate: "",
+    timeLabel: "",
+    tags: [],
+    notes: "",
+  };
+}
+
+function getTodayStr(): string {
+  return new Date().toISOString().split("T")[0];
+}
+
+function getWeekEndStr(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 6);
+  return d.toISOString().split("T")[0];
+}
+
 function buildSessionSummary(
   session: "pre-market" | "live" | "close",
   stocks: StockCard[],
@@ -355,7 +466,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [sessionView, setSessionView] = useState<"pre-market" | "live" | "close">("live");
+  const [sessionView, setSessionView] = useState<SessionView>("live");
+  const [activeView, setActiveView] = useState<MainView>("overview");
   const [showChart, setShowChart] = useState(false);
   const [showUrgencySettings, setShowUrgencySettings] = useState(false);
   const [urgencySettings, setUrgencySettings] = useState<UrgencySettingsDraft>(DEFAULT_URGENCY_SETTINGS);
@@ -376,13 +488,45 @@ function App() {
   const [journalDraft, setJournalDraft] = useState<JournalEntryDraft | null>(null);
   const [savedJournalEntries, setSavedJournalEntries] = useState<StoredJournalEntry[]>([]);
   const [savingJournalEntry, setSavingJournalEntry] = useState(false);
+  const [thesisOutcomeSummary, setThesisOutcomeSummary] = useState<ThesisOutcomeSummary | null>(null);
   const [tickerNote, setTickerNote] = useState<StoredTickerNote | null>(null);
   const [editingNote, setEditingNote] = useState<TickerNoteDraft | null>(null);
   const [savingTickerNote, setSavingTickerNote] = useState(false);
   const [tickerNotes, setTickerNotes] = useState<StoredTickerNote[]>([]);
+  const [focusQueueEntries, setFocusQueueEntries] = useState<FocusQueueEntryView[]>([]);
+  const [editingFocusEntry, setEditingFocusEntry] = useState<FocusQueueEntryDraft | null>(null);
+  const [focusQueueEntryMeta, setFocusQueueEntryMeta] = useState<FocusQueueEntryView | null>(null);
+  const [savingFocusQueueEntry, setSavingFocusQueueEntry] = useState(false);
+  const [leaderHoldings, setLeaderHoldings] = useState<StoredLeaderHolding[]>([]);
+  const [editingLeaderHolding, setEditingLeaderHolding] = useState<LeaderHoldingDraft>(
+    buildEmptyLeaderHolding(),
+  );
+  const [savingLeaderHolding, setSavingLeaderHolding] = useState(false);
+  const [catalystEvents, setCatalystEvents] = useState<StoredCatalystEvent[]>([]);
+  const [editingCatalystEvent, setEditingCatalystEvent] = useState<CatalystEventDraft>(
+    buildEmptyCatalystEvent(),
+  );
+  const [catalystTagsInput, setCatalystTagsInput] = useState("");
+  const [savingCatalystEvent, setSavingCatalystEvent] = useState(false);
+  const [catalystView, setCatalystView] = useState<"today" | "this_week" | "by_ticker">("today");
+  const [trades, setTrades] = useState<StoredTrade[]>([]);
+  const [reviewMetrics, setReviewMetrics] = useState<ReviewMetrics | null>(null);
   const [journalOffset, setJournalOffset] = useState(0);
   const [hasMoreJournal, setHasMoreJournal] = useState(false);
+  const [boardFilters, setBoardFiltersRaw] = useState<BoardFilters>(
+    () => loadFromStorage(LS_BOARD_FILTERS, DEFAULT_BOARD_FILTERS),
+  );
+  const [tradeFilters, setTradeFiltersRaw] = useState<TradeFilters>(
+    () => loadFromStorage(LS_TRADE_FILTERS, DEFAULT_TRADE_FILTERS),
+  );
+  const [savedPresets, setSavedPresetsRaw] = useState<SavedFilterPreset[]>(
+    () => loadFromStorage(LS_PRESETS, []),
+  );
   const marketStatus = useMarketStatus();
+  function setBoardFilters(f: BoardFilters) { saveToStorage(LS_BOARD_FILTERS, f); setBoardFiltersRaw(f); }
+  function setTradeFilters(f: TradeFilters) { saveToStorage(LS_TRADE_FILTERS, f); setTradeFiltersRaw(f); }
+  function setSavedPresets(p: SavedFilterPreset[]) { saveToStorage(LS_PRESETS, p); setSavedPresetsRaw(p); }
+
   const groupedAlerts = groupAlertsByTicker(savedAlertRules);
   const normalizedTickerInput = tickerInput.trim().toUpperCase();
   const tickerAlreadyTracked = stocks.some((stock) => stock.ticker === normalizedTickerInput);
@@ -475,6 +619,36 @@ function App() {
     setHasMoreAlerts(hasMore);
   }
 
+  async function updateAlertTaskStatus(
+    alertId: string,
+    status: "pending" | "snoozed" | "dismissed" | "acted",
+    snoozedUntil?: string,
+  ) {
+    try {
+      await fetch(`/api/triggered-alerts/${DEMO_USER_ID}/${alertId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_status: status, snoozed_until: snoozedUntil ?? null }),
+      });
+      setTriggeredAlerts((prev) =>
+        prev.map((a) =>
+          a.payload.alert_id === alertId
+            ? {
+                ...a,
+                payload: {
+                  ...a.payload,
+                  task_status: status,
+                  snoozed_until: snoozedUntil ?? null,
+                },
+              }
+            : a,
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update alert status.");
+    }
+  }
+
   async function loadJournalEntries(offset = 0) {
     const response = await fetch(
       `/api/journal-entries/${DEMO_USER_ID}?limit=${JOURNAL_PAGE + 1}&offset=${offset}`,
@@ -496,16 +670,76 @@ function App() {
     setEditingNote(payload.payload);
   }
 
+  async function loadThesisOutcomeSummary(ticker: string) {
+    const response = await fetch(`/api/thesis-outcome/${DEMO_USER_ID}/${ticker}`);
+    if (!response.ok) throw new Error("Failed to load thesis/outcome summary.");
+    setThesisOutcomeSummary((await response.json()) as ThesisOutcomeSummary);
+  }
+
   async function loadTickerNotes() {
     const response = await fetch(`/api/ticker-notes/${DEMO_USER_ID}`);
     if (!response.ok) throw new Error("Failed to load ticker notes.");
     setTickerNotes((await response.json()) as StoredTickerNote[]);
   }
 
+  async function loadFocusQueueEntries() {
+    const response = await fetch(`/api/focus-queue/${DEMO_USER_ID}`);
+    if (!response.ok) throw new Error("Failed to load focus queue.");
+    setFocusQueueEntries((await response.json()) as FocusQueueEntryView[]);
+  }
+
+  async function loadFocusQueueEntry(ticker: string) {
+    const response = await fetch(`/api/focus-queue/${DEMO_USER_ID}/${ticker}`);
+    if (!response.ok) throw new Error("Failed to load focus queue entry.");
+    const payload = (await response.json()) as FocusQueueEntryView;
+    setFocusQueueEntryMeta(payload);
+    setEditingFocusEntry(payload.payload);
+  }
+
   async function loadDigest() {
     const response = await fetch(`/api/digest/${DEMO_USER_ID}`);
     if (!response.ok) throw new Error("Failed to load end-of-day digest.");
     setDigest((await response.json()) as EndOfDayDigest);
+  }
+
+  async function loadLeaderHoldings() {
+    const response = await fetch(`/api/leader-holdings/${DEMO_USER_ID}`);
+    if (!response.ok) throw new Error("Failed to load leader holdings.");
+    setLeaderHoldings((await response.json()) as StoredLeaderHolding[]);
+  }
+
+  async function loadCatalystEvents() {
+    const response = await fetch(`/api/catalyst-events/${DEMO_USER_ID}`);
+    if (!response.ok) throw new Error("Failed to load catalyst events.");
+    setCatalystEvents((await response.json()) as StoredCatalystEvent[]);
+  }
+
+  async function loadTrades() {
+    const response = await fetch(`/api/trades/${DEMO_USER_ID}`);
+    if (!response.ok) throw new Error("Failed to load trades.");
+    setTrades((await response.json()) as StoredTrade[]);
+  }
+
+  async function loadReviewMetrics() {
+    const res = await fetch(`/api/review-metrics/${DEMO_USER_ID}`);
+    if (!res.ok) throw new Error("Failed to load review metrics.");
+    setReviewMetrics((await res.json()) as ReviewMetrics);
+  }
+
+  async function persistTrade(trade: TradeDraft) {
+    const response = await fetch("/api/trades", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: DEMO_USER_ID, trade }),
+    });
+    if (!response.ok) throw new Error("Failed to save trade.");
+    await loadTrades();
+  }
+
+  async function deleteTrade(tradeId: string) {
+    const response = await fetch(`/api/trades/${DEMO_USER_ID}/${tradeId}`, { method: "DELETE" });
+    if (!response.ok) throw new Error("Failed to delete trade.");
+    await loadTrades();
   }
 
   async function refresh() {
@@ -522,7 +756,12 @@ function App() {
         loadTriggeredAlerts(),
         loadJournalEntries(),
         loadTickerNotes(),
+        loadFocusQueueEntries(),
+        loadLeaderHoldings(),
+        loadCatalystEvents(),
+        loadTrades(),
         loadDigest(),
+        loadReviewMetrics(),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Dashboard refresh failed.");
@@ -570,7 +809,7 @@ function App() {
     }
     setTickerInput("");
     setTickerValidation(null);
-    await loadDashboard();
+    await Promise.all([loadDashboard(), loadFocusQueueEntries()]);
   }
 
   async function removeTicker(ticker: string) {
@@ -582,7 +821,7 @@ function App() {
       setError("Failed to remove ticker from watchlist.");
       return;
     }
-    await loadDashboard();
+    await Promise.all([loadDashboard(), loadFocusQueueEntries()]);
     setSelectedSymbol((current) => {
       if (current !== ticker) return current;
       return stocks.find((item) => item.ticker !== ticker)?.ticker ?? null;
@@ -775,6 +1014,127 @@ function App() {
     }
   }
 
+  async function persistFocusQueueEntry() {
+    if (!editingFocusEntry) return;
+    setSavingFocusQueueEntry(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/focus-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, entry: editingFocusEntry }),
+      });
+      if (!response.ok) throw new Error("Failed to save focus queue entry.");
+      await Promise.all([
+        loadFocusQueueEntry(editingFocusEntry.ticker),
+        loadFocusQueueEntries(),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save focus queue entry.");
+    } finally {
+      setSavingFocusQueueEntry(false);
+    }
+  }
+
+  async function restoreGeneratedFocusQueueEntry(ticker: string) {
+    setSavingFocusQueueEntry(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/focus-queue/${DEMO_USER_ID}/${ticker}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error("Failed to restore system suggestion.");
+      await Promise.all([
+        loadFocusQueueEntry(ticker),
+        loadFocusQueueEntries(),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to restore system suggestion.");
+    } finally {
+      setSavingFocusQueueEntry(false);
+    }
+  }
+
+  async function persistLeaderHolding() {
+    if (!editingLeaderHolding.ticker.trim()) {
+      setError("Leader holding ticker is required.");
+      return;
+    }
+    setSavingLeaderHolding(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/leader-holdings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, holding: editingLeaderHolding }),
+      });
+      if (!response.ok) throw new Error("Failed to save leader holding.");
+      await loadLeaderHoldings();
+      setEditingLeaderHolding(buildEmptyLeaderHolding());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save leader holding.");
+    } finally {
+      setSavingLeaderHolding(false);
+    }
+  }
+
+  async function deleteLeaderHolding(ticker: string) {
+    setError(null);
+    try {
+      const response = await fetch(`/api/leader-holdings/${DEMO_USER_ID}/${ticker}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error("Failed to delete leader holding.");
+      await loadLeaderHoldings();
+      if (editingLeaderHolding.ticker === ticker) {
+        setEditingLeaderHolding(buildEmptyLeaderHolding());
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete leader holding.");
+    }
+  }
+
+  async function persistCatalystEvent() {
+    if (!editingCatalystEvent.headline.trim()) {
+      setError("Catalyst headline is required.");
+      return;
+    }
+    if (editingCatalystEvent.scope === "ticker" && !editingCatalystEvent.ticker.trim()) {
+      setError("Ticker catalysts require a ticker.");
+      return;
+    }
+    setSavingCatalystEvent(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/catalyst-events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, event: editingCatalystEvent }),
+      });
+      if (!response.ok) throw new Error("Failed to save catalyst event.");
+      await loadCatalystEvents();
+      setEditingCatalystEvent(buildEmptyCatalystEvent());
+      setCatalystTagsInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save catalyst event.");
+    } finally {
+      setSavingCatalystEvent(false);
+    }
+  }
+
+  async function deleteCatalystEvent(eventId: string) {
+    setError(null);
+    try {
+      const response = await fetch(`/api/catalyst-events/${DEMO_USER_ID}/${eventId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error("Failed to delete catalyst event.");
+      await loadCatalystEvents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete catalyst event.");
+    }
+  }
+
   async function persistUrgencySettings() {
     setSavingUrgencySettings(true);
     setError(null);
@@ -807,6 +1167,26 @@ function App() {
     } finally {
       setSendingDigest(false);
     }
+  }
+
+  function savePreset(name: string, view: "board" | "trades") {
+    const preset: SavedFilterPreset = {
+      id: crypto.randomUUID(),
+      name,
+      view,
+      ...(view === "board" ? { boardFilters } : { tradeFilters }),
+    };
+    setSavedPresets([...savedPresets, preset]);
+  }
+
+  function deletePreset(id: string) {
+    setSavedPresets(savedPresets.filter((p) => p.id !== id));
+  }
+
+  function applyPreset(preset: SavedFilterPreset) {
+    if (preset.view === "board" && preset.boardFilters) setBoardFilters(preset.boardFilters);
+    if (preset.view === "trades" && preset.tradeFilters) setTradeFilters(preset.tradeFilters);
+    setActiveView(preset.view);
   }
 
   useEffect(() => {
@@ -884,9 +1264,68 @@ function App() {
   );
   const selected =
     [...stocks, ...overviewSelections].find((stock) => stock.ticker === selectedSymbol) ??
+    overviewSelections.find((stock) => stock.ticker === selectedSymbol) ??
     stocks[0] ??
     overviewSelections[0] ??
     null;
+  const selectedTrackedStock =
+    stocks.find((stock) => stock.ticker === selectedSymbol) ??
+    stocks[0] ??
+    null;
+  const activeTrackedTicker = selectedTrackedStock?.ticker ?? null;
+  const selectedNoteSummary =
+    (activeTrackedTicker
+      ? tickerNotes.find((note) => note.ticker === activeTrackedTicker)
+      : null) ?? tickerNote;
+  const selectedAlertGroup =
+    activeTrackedTicker != null
+      ? groupedAlerts.find((group) => group.ticker === activeTrackedTicker) ?? null
+      : null;
+  const selectedTriggeredAlerts =
+    activeTrackedTicker != null
+      ? triggeredAlerts.filter((alert) => alert.ticker === activeTrackedTicker).slice(0, 3)
+      : [];
+  const selectedJournalPreview =
+    activeTrackedTicker != null
+      ? savedJournalEntries.filter((entry) => entry.ticker === activeTrackedTicker).slice(0, 2)
+      : [];
+  const selectedLeaderHolding =
+    activeTrackedTicker != null
+      ? leaderHoldings.find((holding) => holding.ticker === activeTrackedTicker) ?? null
+      : null;
+  const overlapLeaderHoldings = leaderHoldings.filter((holding) =>
+    stocks.some((stock) => stock.ticker === holding.ticker),
+  );
+  const selectedTickerCatalysts =
+    activeTrackedTicker != null
+      ? catalystEvents.filter(
+          (event) => event.payload.scope === "ticker" && event.ticker === activeTrackedTicker,
+        )
+      : [];
+  const macroCatalysts = catalystEvents.filter((event) => event.payload.scope === "macro");
+  const watchlistCatalysts = catalystEvents.filter(
+    (event) => event.payload.scope === "ticker" && stocks.some((stock) => stock.ticker === event.ticker),
+  );
+  const todayStr = getTodayStr();
+  const weekEndStr = getWeekEndStr();
+  const todayCatalysts = catalystEvents.filter(
+    (e) => e.payload.eventDate === todayStr,
+  );
+  const thisWeekCatalysts = catalystEvents.filter(
+    (e) => e.payload.eventDate >= todayStr && e.payload.eventDate <= weekEndStr,
+  );
+  const byTickerMap = catalystEvents.reduce<Record<string, StoredCatalystEvent[]>>((acc, event) => {
+    const key = event.payload.scope === "macro" ? "__macro__" : event.ticker || "__macro__";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(event);
+    return acc;
+  }, {});
+  const selectedStrategyTag = selectedNoteSummary?.payload.strategyTag.trim() || "Unsorted";
+  const topUrgencyStocks = stocks.slice(0, 6);
+  const liveCount = stocks.filter((stock) => stock.data_status === "live").length;
+  const delayedCount = stocks.filter((stock) => stock.data_status === "delayed").length;
+  const waitingCount = stocks.filter((stock) => stock.data_status === "waiting").length;
+  const taggedCount = tickerNotes.filter((note) => note.payload.strategyTag.trim()).length;
   const selectedStatusLabel = selected
     ? selected.data_status === "live"
       ? "Live"
@@ -902,7 +1341,34 @@ function App() {
       : sessionView === "close"
         ? [...stocks].sort((left, right) => left.ticker.localeCompare(right.ticker))
         : stocks;
-  const strategyGroups = groupStocksByStrategy(sessionFilteredStocks, tickerNotes);
+
+  function stockHasCatalyst(ticker: string): boolean {
+    const today = new Date();
+    const limit = new Date(today);
+    limit.setDate(limit.getDate() + 7);
+    return catalystEvents.some((e) => {
+      if (e.payload.scope !== "ticker" || e.ticker !== ticker) return false;
+      const d = new Date(e.payload.eventDate);
+      return d >= today && d <= limit;
+    });
+  }
+
+  const filteredStocks: StockCard[] = sessionFilteredStocks.filter((stock) => {
+    if (boardFilters.status !== "all" && stock.data_status !== boardFilters.status) return false;
+    if (boardFilters.minUrgency === "watch" && stock.urgency_score < urgencySettings.lowThreshold) return false;
+    if (boardFilters.minUrgency === "hot" && stock.urgency_score < urgencySettings.highThreshold) return false;
+    if (boardFilters.hasCatalyst && !stockHasCatalyst(stock.ticker)) return false;
+    return true;
+  });
+
+  const filteredTrades: StoredTrade[] = trades.filter((t) => {
+    if (tradeFilters.setupType !== "all" && t.payload.setupType !== tradeFilters.setupType) return false;
+    if (tradeFilters.stage !== "all" && t.payload.stage !== tradeFilters.stage) return false;
+    if (tradeFilters.outcomeTag !== "all" && t.payload.outcomeTag !== tradeFilters.outcomeTag) return false;
+    return true;
+  });
+
+  const strategyGroups = groupStocksByStrategy(filteredStocks, tickerNotes);
   const sessionSummary = buildSessionSummary(sessionView, stocks, tickerNotes);
   const dailySummary = buildDailySummary(
     sessionView,
@@ -911,39 +1377,121 @@ function App() {
     triggeredAlerts,
     tickerNotes,
   );
+  const focusQueueGroups: Array<{ bucket: FocusQueueBucket; entries: FocusQueueEntryView[] }> = (
+    ["today_focus", "monitor", "ignore"] as FocusQueueBucket[]
+  ).map((bucket) => ({
+    bucket,
+    entries: focusQueueEntries.filter((entry) => entry.payload.bucket === bucket),
+  }));
+  const viewContext =
+    activeView === "overview"
+      ? {
+          title: "Market context at a glance",
+          body: `${indices.length} index cards and ${dailySummary.length} session metrics are grouped into one screen.`,
+        }
+      : activeView === "board"
+        ? {
+            title: "Urgency-ranked watchlist board",
+            body: `${stocks.length} tracked symbols · ${liveCount} live · ${waitingCount} waiting.`,
+          }
+        : activeView === "leader"
+          ? {
+              title: "Leader holdings overlay",
+              body: `${leaderHoldings.length} tracked leader positions · ${overlapLeaderHoldings.length} overlap with your board.`,
+            }
+          : activeView === "catalysts"
+            ? {
+                title: "Catalyst and calendar context",
+                body: `${catalystEvents.length} saved catalyst events · ${macroCatalysts.length} macro · ${watchlistCatalysts.length} tied to your watchlist.`,
+              }
+          : {
+            title: "Selected ticker workspace",
+            body: activeTrackedTicker
+              ? `${activeTrackedTicker} with ${selectedAlertGroup?.rules.length ?? 0} saved alerts and ${taggedCount} tagged setups across the board.`
+              : "Select a tracked ticker to open notes, alerts, and journal context.",
+          };
+  const sessionTabs = (
+    <div className="session-tabs compact-session-tabs">
+      {SESSION_OPTIONS.map((option) => (
+        <button
+          key={option.id}
+          className={`session-pill ${sessionView === option.id ? "selected" : ""}`}
+          onClick={() => setSessionView(option.id)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+  const urgencyLegend = (
+    <div className="legend-row compact-legend">
+      <span className="legend-item">
+        <span className="legend-swatch low" />
+        Low urgency
+      </span>
+      <span className="legend-item">
+        <span className="legend-swatch medium" />
+        Medium urgency
+      </span>
+      <span className="legend-item">
+        <span className="legend-swatch high" />
+        High urgency
+      </span>
+    </div>
+  );
 
   useEffect(() => {
-    if (!selected || selected.data_status === "live") {
+    if (activeView === "overview" || selectedTrackedStock == null || selectedTrackedStock.data_status === "live") {
       return;
     }
 
     const timer = window.setTimeout(() => {
-      void retryBootstrap(selected.ticker);
-    }, selected.data_status === "waiting" ? 15000 : 30000);
+      void retryBootstrap(selectedTrackedStock.ticker);
+    }, selectedTrackedStock.data_status === "waiting" ? 15000 : 30000);
 
     return () => window.clearTimeout(timer);
-  }, [selected?.ticker, selected?.data_status]);
+  }, [activeView, selectedTrackedStock?.ticker, selectedTrackedStock?.data_status]);
 
   useEffect(() => {
-    if (!selected || OVERVIEW_TICKERS.has(selected.ticker)) {
+    if (activeView !== "overview" && stocks.length > 0 && !stocks.some((stock) => stock.ticker === selectedSymbol)) {
+      setSelectedSymbol(stocks[0].ticker);
+    }
+  }, [activeView, stocks, selectedSymbol]);
+
+  useEffect(() => {
+    if (!selectedTrackedStock) {
       setTickerNote(null);
       setEditingNote(null);
+      setFocusQueueEntryMeta(null);
+      setEditingFocusEntry(null);
+      setThesisOutcomeSummary(null);
       return;
     }
 
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetch(`/api/ticker-notes/${DEMO_USER_ID}/${selected.ticker}`);
-        if (!response.ok) throw new Error("Failed to load ticker notes.");
-        const payload = (await response.json()) as StoredTickerNote;
+        const [noteResponse, summaryResponse, focusQueueResponse] = await Promise.all([
+          fetch(`/api/ticker-notes/${DEMO_USER_ID}/${selectedTrackedStock.ticker}`),
+          fetch(`/api/thesis-outcome/${DEMO_USER_ID}/${selectedTrackedStock.ticker}`),
+          fetch(`/api/focus-queue/${DEMO_USER_ID}/${selectedTrackedStock.ticker}`),
+        ]);
+        if (!noteResponse.ok) throw new Error("Failed to load ticker notes.");
+        if (!summaryResponse.ok) throw new Error("Failed to load thesis/outcome summary.");
+        if (!focusQueueResponse.ok) throw new Error("Failed to load focus queue entry.");
+        const notePayload = (await noteResponse.json()) as StoredTickerNote;
+        const summaryPayload = (await summaryResponse.json()) as ThesisOutcomeSummary;
+        const focusQueuePayload = (await focusQueueResponse.json()) as FocusQueueEntryView;
         if (!cancelled) {
-          setTickerNote(payload);
-          setEditingNote(payload.payload);
+          setTickerNote(notePayload);
+          setEditingNote(notePayload.payload);
+          setFocusQueueEntryMeta(focusQueuePayload);
+          setEditingFocusEntry(focusQueuePayload.payload);
+          setThesisOutcomeSummary(summaryPayload);
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load ticker notes.");
+          setError(err instanceof Error ? err.message : "Failed to load ticker detail summary.");
         }
       }
     })();
@@ -951,7 +1499,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [selected?.ticker]);
+  }, [selectedTrackedStock?.ticker]);
 
   return (
     <div className="app-shell">
@@ -1014,7 +1562,6 @@ function App() {
       </section>
 
       {error ? <div className="error-banner">{error}</div> : null}
-
       <section className="source-strip">
         <div className="source-card">
           <span className="source-label">Provider</span>
@@ -1033,277 +1580,1416 @@ function App() {
         </div>
       </section>
 
-      <section className="session-strip">
-        <div className="session-tabs">
-          {SESSION_OPTIONS.map((option) => (
+      <section className="view-strip">
+        <div className="view-tabs">
+          {VIEW_OPTIONS.map((option) => (
             <button
               key={option.id}
-              className={`session-pill ${sessionView === option.id ? "selected" : ""}`}
-              onClick={() => setSessionView(option.id)}
+              className={`view-pill ${activeView === option.id ? "selected" : ""}`}
+              onClick={() => setActiveView(option.id)}
             >
               {option.label}
             </button>
           ))}
         </div>
-        <div className="session-summary">
-          <strong>{sessionSummary.title}</strong>
-          <span>{sessionSummary.body}</span>
+        <div className="view-summary">
+          <strong>{viewContext.title}</strong>
+          <span>{viewContext.body}</span>
         </div>
-        <div className="summary-grid">
-          {dailySummary.map((item) => (
-            <article key={item.label} className="summary-card">
-              <span className="summary-label">{item.label}</span>
-              <strong>{item.value}</strong>
-              <small>{item.detail}</small>
-            </article>
-          ))}
-        </div>
-        {sessionView === "close" && digest ? (
-          <div className="digest-card">
-            <div className="digest-header">
+      </section>
+
+      <main className="dashboard-stage">
+        {activeView === "overview" ? (
+          <section className="tab-panel overview-panel">
+            <div className="tab-panel-header">
               <div>
-                <span className="summary-label">{digest.headline}</span>
-                <strong>{new Date(digest.generated_at).toLocaleString()}</strong>
+                <p className="eyebrow">Session Lens</p>
+                <h2>Market overview</h2>
               </div>
-              <div className="inline-action-row">
-                <button className="ghost-button" onClick={() => void loadDigest()}>
-                  Refresh Digest
-                </button>
-                <button className="refresh-button" onClick={() => void sendDigest()} disabled={sendingDigest}>
-                  {sendingDigest ? "Sending..." : "Send to Discord"}
-                </button>
+              {sessionTabs}
+            </div>
+
+            <div className="overview-layout">
+              <div className="overview-main">
+                <section className="session-strip panel-card">
+                  <div className="session-summary">
+                    <strong>{sessionSummary.title}</strong>
+                    <span>{sessionSummary.body}</span>
+                  </div>
+                  <div className="summary-grid">
+                    {dailySummary.map((item) => (
+                      <article key={item.label} className="summary-card">
+                        <span className="summary-label">{item.label}</span>
+                        <strong>{item.value}</strong>
+                        <small>{item.detail}</small>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="overview-grid">
+                  {indices.map((quote) => (
+                    <article
+                      key={quote.ticker}
+                      className={`overview-card interactive ${selectedSymbol === quote.ticker ? "selected" : ""}`}
+                      onClick={() => setSelectedSymbol(quote.ticker)}
+                    >
+                      <span className="overview-label">{quote.ticker}</span>
+                      <strong>{formatCurrency(quote.current_price)}</strong>
+                      <span className={quote.change_pct >= 0 ? "change-up" : "change-down"}>
+                        {quote.change_pct >= 0 ? "+" : ""}
+                        {quote.change_pct.toFixed(2)}%
+                      </span>
+                      <small>{quote.label}</small>
+                    </article>
+                  ))}
+                </section>
+
+                <section className="snapshot-grid">
+                  <article className="snapshot-card">
+                    <span className="summary-label">Tracked Symbols</span>
+                    <strong>{stocks.length}</strong>
+                    <small>{liveCount} live · {delayedCount} delayed · {waitingCount} waiting</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Strategy Tags</span>
+                    <strong>{taggedCount}</strong>
+                    <small>Tagged setups captured in ticker notes</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Recent Alert Pressure</span>
+                    <strong>{triggeredAlerts.length}</strong>
+                    <small>Loaded triggered alerts in this workspace</small>
+                  </article>
+                </section>
               </div>
-            </div>
-            <p className="digest-summary">{digest.summary}</p>
-            <div className="summary-grid">
-              {digest.metrics.map((item) => (
-                <article key={item.label} className="summary-card">
-                  <span className="summary-label">{item.label}</span>
-                  <strong>{item.value}</strong>
-                  <small>{item.detail}</small>
-                </article>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </section>
 
-      <section className="overview-grid">
-        {indices.map((quote) => (
-          <article
-            key={quote.ticker}
-            className={`overview-card interactive ${selectedSymbol === quote.ticker ? "selected" : ""}`}
-            onClick={() => setSelectedSymbol(quote.ticker)}
-          >
-            <span className="overview-label">{quote.ticker}</span>
-            <strong>{formatCurrency(quote.current_price)}</strong>
-            <span className={quote.change_pct >= 0 ? "change-up" : "change-down"}>
-              {quote.change_pct >= 0 ? "+" : ""}
-              {quote.change_pct.toFixed(2)}%
-            </span>
-            <small>{quote.label}</small>
-          </article>
-        ))}
-      </section>
-
-      <section className="legend-row">
-        <span className="legend-item">
-          <span className="legend-swatch low" />
-          Low urgency
-        </span>
-        <span className="legend-item">
-          <span className="legend-swatch medium" />
-          Medium urgency
-        </span>
-        <span className="legend-item">
-          <span className="legend-swatch high" />
-          High urgency
-        </span>
-      </section>
-
-      <section className="content-grid">
-        <div className="card-grid">
-          {strategyGroups.map((group) => (
-            <section key={group.name} className="strategy-group">
-              <div className="strategy-group-header">
-                <div>
-                  <p className="eyebrow">Strategy Group</p>
-                  <h3>{group.name}</h3>
+              <aside className="overview-side panel-card">
+                <div className="compact-card-header">
+                  <div>
+                    <p className="eyebrow">Focus Name</p>
+                    <h3>{selected?.ticker ?? "No symbol selected"}</h3>
+                  </div>
+                  {selected ? (
+                    <span className={`status-pill neutral detail-status-inline ${selected.data_status}`}>
+                      {selectedStatusLabel}
+                    </span>
+                  ) : null}
                 </div>
-                <span className="strategy-count">{group.stocks.length} symbols</span>
-              </div>
-              <div className="strategy-group-grid">
-                {group.stocks.map((stock) => (
-                  <article
-                    key={stock.ticker}
-                    className={`stock-card ${selected?.ticker === stock.ticker ? "selected" : ""} ${
-                      stock.data_status === "waiting"
-                        ? "waiting"
-                        : stock.data_status === "delayed"
-                          ? "delayed"
-                          : ""
-                    }`}
-                    onClick={() => setSelectedSymbol(stock.ticker)}
-                  >
-                    <div className="card-header">
-                      <div>
-                        <span className="ticker">{stock.ticker}</span>
-                        <p>{stock.display_name}</p>
-                      </div>
-                      <button
-                        className="remove-button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void removeTicker(stock.ticker);
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </div>
-
-                    <div className="card-price-row">
-                      <strong className={stock.data_status === "waiting" ? "pending-price" : ""}>
-                        {stock.data_status === "waiting" && !hasUsablePrice(stock)
-                          ? "Waiting for data"
-                          : formatCurrency(stock.current_price)}
-                      </strong>
+                {selected ? (
+                  <>
+                    <p className="detail-name">{selected.display_name}</p>
+                    <div className="focus-price-row">
+                      <strong>{hasUsablePrice(selected) ? formatCurrency(selected.current_price) : "Waiting…"}</strong>
                       <span
                         className={
-                          stock.data_status === "live"
-                            ? stock.change_pct != null && stock.change_pct >= 0
+                          hasUsablePrice(selected)
+                            ? selected.change_pct != null && selected.change_pct >= 0
                               ? "change-up"
                               : "change-down"
-                            : stock.data_status === "delayed"
-                              ? "change-delayed"
-                              : "change-pending"
+                            : "change-pending"
                         }
                       >
-                        {stock.data_status === "live" || stock.data_status === "delayed"
-                          ? formatChangePct(stock.change_pct)
-                          : "Subscribed"}
+                        {hasUsablePrice(selected) ? formatChangePct(selected.change_pct) : "Pending"}
                       </span>
                     </div>
-
-                    <div className="badge-row">
-                      {stock.data_status === "live" || stock.data_status === "delayed" ? (
-                        <>
-                          <span className="sentiment-badge">{stock.sentiment_label}</span>
-                          <span
-                            className={`urgency-badge urgency-${stock.urgency_score >= 70 ? "high" : stock.urgency_score >= 40 ? "med" : "low"}`}
-                          >
-                            {stock.urgency_score.toFixed(0)}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="data-status-badge waiting">Waiting for market data</span>
-                      )}
-                      {stock.data_status === "delayed" ? (
-                        <span className="data-status-badge delayed">Delayed / limited feed</span>
-                      ) : null}
+                    <div className="detail-chart compact-detail-chart">
+                      <Sparkline points={selected.history} />
                     </div>
-
-                    {stock.data_status !== "waiting" ? <UrgencyBar score={stock.urgency_score} /> : null}
-
-                    {stock.volume > 0 && (
-                      <div className="vol-row">
-                        <span className="vol-label">Vol</span>
-                        <span className="vol-value">{formatVolume(stock.volume)}</span>
+                    <div className="detail-metrics compact-detail-metrics">
+                      <div>
+                        <span>Sentiment</span>
+                        <strong>{selected.sentiment_label}</strong>
                       </div>
-                    )}
-
-                    <div className="freshness-row">
-                      {(() => {
-                        const freshness = getFreshnessLabel(stock.last_updated, stock.data_status);
-                        return (
-                          <span className={`freshness-pill ${freshness.stale ? "stale" : "fresh"}`}>
-                            {freshness.label}
-                          </span>
-                        );
-                      })()}
+                      <div>
+                        <span>Urgency</span>
+                        <strong>{hasUsablePrice(selected) ? selected.urgency_score.toFixed(0) : "Pending"}</strong>
+                      </div>
                     </div>
-                    {stock.data_status_message ? (
-                      <div className="data-status-copy">{stock.data_status_message}</div>
-                    ) : null}
-
-                    <div className="mini-chart">
-                      <Sparkline points={stock.history} />
-                    </div>
-
-                    <div className="card-actions">
-                      <button
-                        className="ghost-button"
-                        disabled={stock.history.length === 0}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSelectedSymbol(stock.ticker);
-                          setShowChart(true);
-                        }}
-                      >
+                    {hasUsablePrice(selected) ? <UrgencyBar score={selected.urgency_score} /> : null}
+                    <div className="card-actions compact-actions">
+                      <button className="ghost-button" onClick={() => setShowChart(true)} disabled={selected.history.length === 0}>
                         Open Chart
                       </button>
+                      {!OVERVIEW_TICKERS.has(selected.ticker) ? (
+                        <button className="ghost-button" onClick={() => setActiveView("workspace")}>
+                          Open Workspace
+                        </button>
+                      ) : (
+                        <button className="ghost-button" onClick={() => setActiveView("board")}>
+                          Open Watchlist
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="draft-empty-state">No selection available.</p>
+                )}
+              </aside>
+            </div>
+
+            {sessionView === "close" && digest ? (
+              <section className="digest-card panel-card">
+                <div className="digest-header">
+                  <div>
+                    <span className="summary-label">{digest.headline}</span>
+                    <strong>{new Date(digest.generated_at).toLocaleString()}</strong>
+                  </div>
+                  <div className="inline-action-row">
+                    <button className="ghost-button" onClick={() => void loadDigest()}>
+                      Refresh Digest
+                    </button>
+                    <button className="refresh-button" onClick={() => void sendDigest()} disabled={sendingDigest}>
+                      {sendingDigest ? "Sending..." : "Send to Discord"}
+                    </button>
+                  </div>
+                </div>
+                <p className="digest-summary">{digest.summary}</p>
+                <div className="summary-grid">
+                  {digest.metrics.map((item) => (
+                    <article key={item.label} className="summary-card">
+                      <span className="summary-label">{item.label}</span>
+                      <strong>{item.value}</strong>
+                      <small>{item.detail}</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </section>
+        ) : null}
+
+        {activeView === "board" ? (
+          <section className="tab-panel board-panel">
+            <div className="tab-panel-header">
+              <div>
+                <p className="eyebrow">Execution Board</p>
+                <h2>Watchlist</h2>
+              </div>
+              {sessionTabs}
+            </div>
+            <FilterStrip
+              view="board"
+              boardFilters={boardFilters}
+              onBoardFilters={setBoardFilters}
+              presets={savedPresets.filter((p) => p.view === "board")}
+              onSavePreset={(name) => savePreset(name, "board")}
+              onDeletePreset={deletePreset}
+              onApplyPreset={applyPreset}
+              filteredCount={filteredStocks.length}
+              totalCount={sessionFilteredStocks.length}
+            />
+
+            <div className="board-layout">
+              <div className="board-side panel-card">
+                <div className="compact-card-header">
+                  <div>
+                    <p className="eyebrow">Board Summary</p>
+                    <h3>{sessionSummary.title}</h3>
+                  </div>
+                </div>
+                <p className="detail-meta">{sessionSummary.body}</p>
+                {urgencyLegend}
+                <div className="saved-drafts-list board-summary-list">
+                  {topUrgencyStocks.map((stock) => (
+                    <button
+                      key={`top-${stock.ticker}`}
+                      className={`saved-draft-item board-summary-item ${activeTrackedTicker === stock.ticker ? "selected-list-item" : ""}`}
+                      onClick={() => setSelectedSymbol(stock.ticker)}
+                    >
+                      <div className="triggered-alert-header">
+                        <strong>{stock.ticker}</strong>
+                        <span className={`urgency-badge urgency-${stock.urgency_score >= 70 ? "high" : stock.urgency_score >= 40 ? "med" : "low"}`}>
+                          {stock.urgency_score.toFixed(0)}
+                        </span>
+                      </div>
+                      <span>{stock.display_name}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="saved-drafts-panel">
+                  <p className="eyebrow">Catalyst Context</p>
+                  {watchlistCatalysts.length === 0 ? (
+                    <p className="draft-empty-state">No watchlist catalysts saved yet.</p>
+                  ) : (
+                    <div className="saved-drafts-list">
+                      {watchlistCatalysts.slice(0, 4).map((event) => (
+                        <button
+                          key={`watchlist-catalyst-${event.event_id}`}
+                          className="saved-draft-item board-summary-item"
+                          onClick={() => setActiveView("catalysts")}
+                        >
+                          <div className="triggered-alert-header">
+                            <strong>{event.ticker || "Macro"}</strong>
+                            <span className="triggered-alert-badge">{event.payload.eventType}</span>
+                          </div>
+                          <span>{event.payload.headline}</span>
+                          <span>{event.payload.eventDate || "No date"} · {event.payload.timeLabel || "No time"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="saved-drafts-panel">
+                  <p className="eyebrow">Leader Overlap</p>
+                  {overlapLeaderHoldings.length === 0 ? (
+                    <p className="draft-empty-state">No leader positions overlap with your watchlist yet.</p>
+                  ) : (
+                    <div className="saved-drafts-list">
+                      {overlapLeaderHoldings.slice(0, 4).map((holding) => (
+                        <button
+                          key={`leader-overlap-${holding.ticker}`}
+                          className="saved-draft-item board-summary-item"
+                          onClick={() => {
+                            setSelectedSymbol(holding.ticker);
+                            setActiveView("leader");
+                          }}
+                        >
+                          <div className="triggered-alert-header">
+                            <strong>{holding.ticker}</strong>
+                            <span className="triggered-alert-badge">{holding.payload.positionStatus}</span>
+                          </div>
+                          <span>
+                            {holding.payload.conviction} conviction · {holding.payload.timeHorizon} horizon
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="board-main">
+                <section className="focus-board-grid">
+                  {focusQueueGroups.map((group) => (
+                    <article key={group.bucket} className="focus-column panel-card">
+                      <div className="compact-card-header">
+                        <div>
+                          <p className="eyebrow">Focus Queue</p>
+                          <h3>{focusBucketLabel(group.bucket)}</h3>
+                        </div>
+                        <span className="strategy-count">{group.entries.length}</span>
+                      </div>
+                      <p className="detail-meta">{focusBucketDescription(group.bucket)}</p>
+                      <div className="focus-entry-list">
+                        {group.entries.length === 0 ? (
+                          <p className="draft-empty-state">No symbols currently assigned.</p>
+                        ) : (
+                          group.entries.map((entry) => (
+                            <button
+                              key={`focus-${group.bucket}-${entry.ticker}`}
+                              className={`saved-draft-item focus-entry-card ${activeTrackedTicker === entry.ticker ? "selected-list-item" : ""}`}
+                              onClick={() => {
+                                setSelectedSymbol(entry.ticker);
+                                setActiveView("workspace");
+                              }}
+                            >
+                              <div className="triggered-alert-header">
+                                <strong>{entry.ticker}</strong>
+                                <div className="focus-badge-group">
+                                  {entry.generated_payload.catalystTag && (
+                                    <span className="catalyst-boost-badge">
+                                      {entry.generated_payload.catalystTag.split(";")[0].trim().split(" · ")[0]}
+                                    </span>
+                                  )}
+                                  <span className={`focus-source-badge ${entry.source}`}>
+                                    {entry.source === "saved" ? "Edited" : "Auto"}
+                                  </span>
+                                </div>
+                              </div>
+                              <span>{entry.payload.whyOnList}</span>
+                              <span className="focus-helper-line">
+                                Trigger: {entry.payload.triggerCondition}
+                              </span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </section>
+
+                <div className="card-grid board-card-grid">
+                  {strategyGroups.map((group) => (
+                    <section key={group.name} className="strategy-group">
+                      <div className="strategy-group-header">
+                        <div>
+                          <p className="eyebrow">Strategy Group</p>
+                          <h3>{group.name}</h3>
+                        </div>
+                        <span className="strategy-count">{group.stocks.length} symbols</span>
+                      </div>
+                      <div className="strategy-group-grid">
+                        {group.stocks.map((stock) => (
+                          <article
+                            key={stock.ticker}
+                            className={`stock-card ${activeTrackedTicker === stock.ticker ? "selected" : ""} ${
+                              stock.data_status === "waiting"
+                                ? "waiting"
+                                : stock.data_status === "delayed"
+                                  ? "delayed"
+                                  : ""
+                            }`}
+                            onClick={() => setSelectedSymbol(stock.ticker)}
+                          >
+                            <div className="card-header">
+                              <div>
+                                <span className="ticker">{stock.ticker}</span>
+                                <p>{stock.display_name}</p>
+                              </div>
+                              <button
+                                className="remove-button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void removeTicker(stock.ticker);
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+
+                            <div className="card-price-row">
+                              <strong className={stock.data_status === "waiting" ? "pending-price" : ""}>
+                                {stock.data_status === "waiting" && !hasUsablePrice(stock)
+                                  ? "Waiting for data"
+                                  : formatCurrency(stock.current_price)}
+                              </strong>
+                              <span
+                                className={
+                                  stock.data_status === "live"
+                                    ? stock.change_pct != null && stock.change_pct >= 0
+                                      ? "change-up"
+                                      : "change-down"
+                                    : stock.data_status === "delayed"
+                                      ? "change-delayed"
+                                      : "change-pending"
+                                }
+                              >
+                                {stock.data_status === "live" || stock.data_status === "delayed"
+                                  ? formatChangePct(stock.change_pct)
+                                  : "Subscribed"}
+                              </span>
+                            </div>
+
+                            <div className="badge-row">
+                              {stock.data_status === "live" || stock.data_status === "delayed" ? (
+                                <>
+                                  <span className="sentiment-badge">{stock.sentiment_label}</span>
+                                  <span
+                                    className={`urgency-badge urgency-${stock.urgency_score >= 70 ? "high" : stock.urgency_score >= 40 ? "med" : "low"}`}
+                                  >
+                                    {stock.urgency_score.toFixed(0)}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="data-status-badge waiting">Waiting for market data</span>
+                              )}
+                              {stock.data_status === "delayed" ? (
+                                <span className="data-status-badge delayed">Delayed / limited feed</span>
+                              ) : null}
+                            </div>
+
+                            {stock.data_status !== "waiting" ? <UrgencyBar score={stock.urgency_score} /> : null}
+
+                            {stock.volume > 0 && (
+                              <div className="vol-row">
+                                <span className="vol-label">Vol</span>
+                                <span className="vol-value">{formatVolume(stock.volume)}</span>
+                              </div>
+                            )}
+
+                            <div className="freshness-row">
+                              {(() => {
+                                const freshness = getFreshnessLabel(stock.last_updated, stock.data_status);
+                                return (
+                                  <span className={`freshness-pill ${freshness.stale ? "stale" : "fresh"}`}>
+                                    {freshness.label}
+                                  </span>
+                                );
+                              })()}
+                            </div>
+                            {stock.data_status_message ? (
+                              <div className="data-status-copy">{stock.data_status_message}</div>
+                            ) : null}
+
+                            <div className="mini-chart">
+                              <Sparkline points={stock.history} />
+                            </div>
+
+                            <div className="card-actions">
+                              <button
+                                className="ghost-button"
+                                disabled={stock.history.length === 0}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedSymbol(stock.ticker);
+                                  setShowChart(true);
+                                }}
+                              >
+                                Open Chart
+                              </button>
+                              <button
+                                className="ghost-button"
+                                disabled={!hasUsablePrice(stock)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedSymbol(stock.ticker);
+                                  setTradePlanDraft(buildTradePlanDraft(stock));
+                                }}
+                              >
+                                Seed Trade Plan
+                              </button>
+                              <button
+                                className="ghost-button"
+                                disabled={!hasUsablePrice(stock)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedSymbol(stock.ticker);
+                                  setAlertRuleDraft(buildAlertRuleDraft(stock));
+                                }}
+                              >
+                                Create Alert
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeView === "workspace" ? (
+          <section className="tab-panel workspace-panel">
+            <div className="tab-panel-header">
+              <div>
+                <p className="eyebrow">Ticker Workspace</p>
+                <h2>{selectedTrackedStock?.ticker ?? "Select a tracked ticker"}</h2>
+              </div>
+              <div className="workspace-controls">
+                {sessionTabs}
+                <button
+                  className="ghost-button"
+                  onClick={() => selectedTrackedStock && setShowChart(true)}
+                  disabled={!selectedTrackedStock || selectedTrackedStock.history.length === 0}
+                >
+                  Open Chart
+                </button>
+              </div>
+            </div>
+
+            <div className="workspace-layout">
+              <aside className="workspace-side panel-card">
+                <div className="compact-card-header">
+                  <div>
+                    <p className="eyebrow">Tracked Names</p>
+                    <h3>{stocks.length} symbols</h3>
+                  </div>
+                  <span className="strategy-count">{taggedCount} tagged</span>
+                </div>
+                <div className="workspace-stock-list">
+                  {stocks.map((stock) => (
+                    <button
+                      key={`workspace-${stock.ticker}`}
+                      className={`workspace-stock-item ${activeTrackedTicker === stock.ticker ? "selected-list-item" : ""}`}
+                      onClick={() => setSelectedSymbol(stock.ticker)}
+                    >
+                      <div className="triggered-alert-header">
+                        <strong>{stock.ticker}</strong>
+                        <span className={`freshness-pill ${stock.data_status === "live" ? "fresh" : "stale"}`}>
+                          {stock.data_status}
+                        </span>
+                      </div>
+                      <span>{stock.display_name}</span>
+                      <span>
+                        {hasUsablePrice(stock) ? formatCurrency(stock.current_price) : "Waiting for data"} ·{" "}
+                        {stock.sentiment_label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </aside>
+
+              <div className="workspace-main">
+                <div className="workspace-summary-grid">
+                  <article className="snapshot-card">
+                    <span className="summary-label">Strategy</span>
+                    <strong>{selectedTrackedStock ? selectedStrategyTag : "No selection"}</strong>
+                    <small>{selectedTrackedStock?.display_name ?? "Choose a ticker from the list"}</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Saved Alerts</span>
+                    <strong>{selectedAlertGroup?.rules.length ?? 0}</strong>
+                    <small>{selectedTrackedStock ? "Rules attached to this ticker" : "Select a ticker to inspect rules"}</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Journal Entries</span>
+                    <strong>{selectedJournalPreview.length}</strong>
+                    <small>Recent journal items loaded for this ticker</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Leader Overlay</span>
+                    <strong>{selectedLeaderHolding ? selectedLeaderHolding.payload.positionStatus : "No overlap"}</strong>
+                    <small>
+                      {selectedLeaderHolding
+                        ? `${selectedLeaderHolding.payload.conviction} conviction · ${selectedLeaderHolding.payload.timeHorizon} horizon`
+                        : "No saved leader holding for this ticker"}
+                    </small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Catalysts</span>
+                    <strong>{selectedTickerCatalysts.length}</strong>
+                    <small>
+                      {selectedTickerCatalysts.length > 0
+                        ? selectedTickerCatalysts[0].payload.headline
+                        : "No catalyst saved for this ticker"}
+                    </small>
+                  </article>
+                </div>
+
+                <section className="panel-card focus-editor-card">
+                  <div className="compact-card-header">
+                    <div>
+                      <p className="eyebrow">Focus Queue</p>
+                      <h3>{selectedTrackedStock ? selectedTrackedStock.ticker : "Select a ticker"}</h3>
+                    </div>
+                    {focusQueueEntryMeta ? (
+                      <span className={`focus-source-badge ${focusQueueEntryMeta.source}`}>
+                        {focusQueueEntryMeta.source === "saved" ? "Using saved override" : "Using generated default"}
+                      </span>
+                    ) : null}
+                  </div>
+                  {editingFocusEntry && selectedTrackedStock ? (
+                    <div className="focus-editor-grid">
+                      <label>
+                        <span>Queue Bucket</span>
+                        <select
+                          value={editingFocusEntry.bucket}
+                          onChange={(event) =>
+                            setEditingFocusEntry({
+                              ...editingFocusEntry,
+                              bucket: event.target.value as FocusQueueBucket,
+                            })
+                          }
+                        >
+                          <option value="today_focus">Today Focus</option>
+                          <option value="monitor">Monitor</option>
+                          <option value="ignore">Ignore for now</option>
+                        </select>
+                      </label>
+                      <label className="trade-plan-wide">
+                        <span>Why is this on the board?</span>
+                        <textarea
+                          value={editingFocusEntry.whyOnList}
+                          onChange={(event) =>
+                            setEditingFocusEntry({
+                              ...editingFocusEntry,
+                              whyOnList: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="trade-plan-wide">
+                        <span>Trigger condition</span>
+                        <textarea
+                          value={editingFocusEntry.triggerCondition}
+                          onChange={(event) =>
+                            setEditingFocusEntry({
+                              ...editingFocusEntry,
+                              triggerCondition: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="trade-plan-wide">
+                        <span>Invalidation condition</span>
+                        <textarea
+                          value={editingFocusEntry.invalidationCondition}
+                          onChange={(event) =>
+                            setEditingFocusEntry({
+                              ...editingFocusEntry,
+                              invalidationCondition: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      {focusQueueEntryMeta ? (
+                        <div className="focus-generated-hint trade-plan-wide">
+                          <strong>Generated suggestion</strong>
+                          <span>
+                            {focusBucketLabel(focusQueueEntryMeta.generated_payload.bucket)}:{" "}
+                            {focusQueueEntryMeta.generated_payload.whyOnList}
+                          </span>
+                          <span>
+                            Trigger: {focusQueueEntryMeta.generated_payload.triggerCondition}
+                          </span>
+                          <span>
+                            Invalidation: {focusQueueEntryMeta.generated_payload.invalidationCondition}
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="draft-empty-state">Select a tracked ticker to edit its focus queue assignment.</p>
+                  )}
+                  <div className="trade-plan-actions">
+                    <button
+                      className="refresh-button"
+                      onClick={() => void persistFocusQueueEntry()}
+                      disabled={!editingFocusEntry || savingFocusQueueEntry}
+                    >
+                      {savingFocusQueueEntry ? "Saving..." : "Save Focus Queue"}
+                    </button>
+                    {focusQueueEntryMeta?.source === "saved" && selectedTrackedStock ? (
                       <button
                         className="ghost-button"
-                        disabled={!hasUsablePrice(stock)}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSelectedSymbol(stock.ticker);
-                          setTradePlanDraft(buildTradePlanDraft(stock));
+                        onClick={() => void restoreGeneratedFocusQueueEntry(selectedTrackedStock.ticker)}
+                        disabled={savingFocusQueueEntry}
+                      >
+                        Restore System Suggestion
+                      </button>
+                    ) : null}
+                  </div>
+                </section>
+
+                <aside className="detail-panel workspace-detail-panel">
+                  <DetailPanel
+                    selected={selectedTrackedStock}
+                    savedDrafts={
+                      selectedTrackedStock
+                        ? savedDrafts.filter((draft) => draft.ticker === selectedTrackedStock.ticker)
+                        : []
+                    }
+                    groupedAlerts={
+                      selectedAlertGroup
+                        ? [selectedAlertGroup]
+                        : activeTrackedTicker == null
+                          ? []
+                          : groupedAlerts.filter((group) => group.ticker === activeTrackedTicker)
+                    }
+                    triggeredAlerts={selectedTriggeredAlerts}
+                    savedJournalEntries={selectedJournalPreview}
+                    thesisOutcomeSummary={thesisOutcomeSummary}
+                    tickerNote={tickerNote}
+                    editingNote={editingNote}
+                    savingTickerNote={savingTickerNote}
+                    hasMoreAlerts={activeTrackedTicker != null && triggeredAlerts.some((alert) => alert.ticker === activeTrackedTicker && !selectedTriggeredAlerts.includes(alert))}
+                    hasMoreJournal={activeTrackedTicker != null && savedJournalEntries.some((entry) => entry.ticker === activeTrackedTicker && !selectedJournalPreview.includes(entry))}
+                    onShowChart={() => setShowChart(true)}
+                    onTradePlan={() =>
+                      selectedTrackedStock &&
+                      hasUsablePrice(selectedTrackedStock) &&
+                      setTradePlanDraft(buildTradePlanDraft(selectedTrackedStock))
+                    }
+                    onAlertRule={() =>
+                      selectedTrackedStock &&
+                      hasUsablePrice(selectedTrackedStock) &&
+                      setAlertRuleDraft(buildAlertRuleDraft(selectedTrackedStock))
+                    }
+                    onJournal={() => selectedTrackedStock && setJournalDraft(buildJournalDraft(selectedTrackedStock))}
+                    onRetryBootstrap={() => selectedTrackedStock && void retryBootstrap(selectedTrackedStock.ticker)}
+                    retryingBootstrap={retryingBootstrap}
+                    onTickerNoteChange={(next) => setEditingNote(next)}
+                    onSaveTickerNote={() => void persistTickerNote()}
+                    onLoadDraft={(draft) => setTradePlanDraft(draft)}
+                    onEditAlertRule={(rule) =>
+                      setAlertRuleDraft({ ...rule.payload, ruleId: rule.rule_id })
+                    }
+                    onToggleAlertRule={(ruleId, enabled) =>
+                      void toggleAlertRuleEnabled(ruleId, enabled)
+                    }
+                    onDeleteAlertRule={(ruleId) => void deleteAlertRule(ruleId)}
+                    onLoadMoreAlerts={() => void loadTriggeredAlerts(alertsOffset + ALERTS_PAGE)}
+                    onLoadMoreJournal={() => void loadJournalEntries(journalOffset + JOURNAL_PAGE)}
+                    onUpdateAlertTask={(alertId, status, snoozedUntil) =>
+                      void updateAlertTaskStatus(alertId, status, snoozedUntil)
+                    }
+                  />
+                </aside>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeView === "leader" ? (
+          <section className="tab-panel leader-panel">
+            <div className="tab-panel-header">
+              <div>
+                <p className="eyebrow">Leader Overlay</p>
+                <h2>Leader Holdings</h2>
+              </div>
+              <div className="workspace-controls">
+                <span className="strategy-count">{leaderHoldings.length} tracked positions</span>
+              </div>
+            </div>
+
+            <div className="workspace-layout">
+              <aside className="workspace-side panel-card">
+                <div className="compact-card-header">
+                  <div>
+                    <p className="eyebrow">Overlap</p>
+                    <h3>{overlapLeaderHoldings.length} symbols on your board</h3>
+                  </div>
+                </div>
+                <div className="workspace-stock-list">
+                  {leaderHoldings.length === 0 ? (
+                    <p className="draft-empty-state">No leader holdings saved yet.</p>
+                  ) : (
+                    leaderHoldings.map((holding) => (
+                      <button
+                        key={`leader-${holding.ticker}`}
+                        className={`workspace-stock-item ${
+                          editingLeaderHolding.ticker === holding.ticker ? "selected-list-item" : ""
+                        }`}
+                        onClick={() => setEditingLeaderHolding(holding.payload)}
+                      >
+                        <div className="triggered-alert-header">
+                          <strong>{holding.ticker}</strong>
+                          <span className="triggered-alert-badge">{holding.payload.positionStatus}</span>
+                        </div>
+                        <span>{holding.payload.conviction} conviction · {holding.payload.timeHorizon} horizon</span>
+                        <span>{holding.payload.entryZone || "No entry zone saved."}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </aside>
+
+              <div className="workspace-main">
+                <div className="workspace-summary-grid">
+                  <article className="snapshot-card">
+                    <span className="summary-label">Overlap</span>
+                    <strong>{overlapLeaderHoldings.length}</strong>
+                    <small>Leader positions also present on your watchlist</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Heavy Conviction</span>
+                    <strong>{leaderHoldings.filter((holding) => holding.payload.conviction === "heavy").length}</strong>
+                    <small>Leader positions marked as heavy</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">New / Adding</span>
+                    <strong>{leaderHoldings.filter((holding) => ["new", "adding"].includes(holding.payload.positionStatus)).length}</strong>
+                    <small>Fresh accumulation signals</small>
+                  </article>
+                </div>
+
+                <section className="panel-card focus-editor-card">
+                  <div className="compact-card-header">
+                    <div>
+                      <p className="eyebrow">Holding Editor</p>
+                      <h3>{editingLeaderHolding.ticker || "New leader holding"}</h3>
+                    </div>
+                  </div>
+
+                  <div className="focus-editor-grid">
+                    <label>
+                      <span>Ticker</span>
+                      <input
+                        value={editingLeaderHolding.ticker}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            ticker: event.target.value.toUpperCase(),
+                          })
+                        }
+                        placeholder="e.g. NVDA"
+                      />
+                    </label>
+                    <label>
+                      <span>Position Status</span>
+                      <select
+                        value={editingLeaderHolding.positionStatus}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            positionStatus: event.target.value as LeaderHoldingDraft["positionStatus"],
+                          })
+                        }
+                      >
+                        <option value="holding">Holding</option>
+                        <option value="new">New</option>
+                        <option value="adding">Adding</option>
+                        <option value="trimming">Trimming</option>
+                        <option value="closed">Closed</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Conviction</span>
+                      <select
+                        value={editingLeaderHolding.conviction}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            conviction: event.target.value as LeaderHoldingDraft["conviction"],
+                          })
+                        }
+                      >
+                        <option value="light">Light</option>
+                        <option value="standard">Standard</option>
+                        <option value="heavy">Heavy</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Time Horizon</span>
+                      <select
+                        value={editingLeaderHolding.timeHorizon}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            timeHorizon: event.target.value as LeaderHoldingDraft["timeHorizon"],
+                          })
+                        }
+                      >
+                        <option value="short">Short</option>
+                        <option value="swing">Swing</option>
+                        <option value="mid">Mid</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Entry Zone</span>
+                      <input
+                        value={editingLeaderHolding.entryZone}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            entryZone: event.target.value,
+                          })
+                        }
+                        placeholder="e.g. 114-118"
+                      />
+                    </label>
+                    <label>
+                      <span>Last Updated At</span>
+                      <input
+                        value={editingLeaderHolding.lastUpdatedAt}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            lastUpdatedAt: event.target.value,
+                          })
+                        }
+                        placeholder="e.g. 2026-05-24 09:10 PT"
+                      />
+                    </label>
+                    <label className="trade-plan-wide">
+                      <span>Thesis</span>
+                      <textarea
+                        value={editingLeaderHolding.thesis}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            thesis: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="trade-plan-wide">
+                      <span>Invalidated When</span>
+                      <textarea
+                        value={editingLeaderHolding.invalidatedWhen}
+                        onChange={(event) =>
+                          setEditingLeaderHolding({
+                            ...editingLeaderHolding,
+                            invalidatedWhen: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <div className="trade-plan-actions">
+                    <button
+                      className="refresh-button"
+                      onClick={() => void persistLeaderHolding()}
+                      disabled={savingLeaderHolding}
+                    >
+                      {savingLeaderHolding ? "Saving..." : "Save Holding"}
+                    </button>
+                    {editingLeaderHolding.ticker ? (
+                      <button
+                        className="ghost-button"
+                        onClick={() => void deleteLeaderHolding(editingLeaderHolding.ticker)}
+                        disabled={savingLeaderHolding}
+                      >
+                        Delete Holding
+                      </button>
+                    ) : null}
+                    <button
+                      className="ghost-button"
+                      onClick={() => setEditingLeaderHolding(buildEmptyLeaderHolding())}
+                      disabled={savingLeaderHolding}
+                    >
+                      New Entry
+                    </button>
+                  </div>
+                </section>
+
+                <section className="panel-card focus-column">
+                  <div className="compact-card-header">
+                    <div>
+                      <p className="eyebrow">Recent Holdings</p>
+                      <h3>Leader activity</h3>
+                    </div>
+                  </div>
+                  <div className="focus-entry-list">
+                    {leaderHoldings.length === 0 ? (
+                      <p className="draft-empty-state">Start by entering the first leader position.</p>
+                    ) : (
+                      leaderHoldings.map((holding) => (
+                        <article key={`leader-list-${holding.ticker}`} className="saved-draft-item">
+                          <div className="triggered-alert-header">
+                            <strong>{holding.ticker}</strong>
+                            <span className="triggered-alert-badge">{holding.payload.positionStatus}</span>
+                          </div>
+                          <span>{holding.payload.thesis || "No thesis saved yet."}</span>
+                          <span>
+                            {holding.payload.conviction} conviction · {holding.payload.timeHorizon} horizon · {holding.payload.entryZone || "No entry zone"}
+                          </span>
+                          <span className="triggered-alert-time">
+                            Updated {holding.payload.lastUpdatedAt || new Date(holding.updated_at).toLocaleString()}
+                          </span>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                </section>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeView === "catalysts" ? (
+          <section className="tab-panel leader-panel">
+            <div className="tab-panel-header">
+              <div>
+                <p className="eyebrow">Calendar Layer</p>
+                <h2>Catalysts</h2>
+              </div>
+              <div className="workspace-controls">
+                <span className="strategy-count">{catalystEvents.length} saved events</span>
+              </div>
+            </div>
+
+            <div className="workspace-layout">
+              <aside className="workspace-side panel-card">
+                <div className="compact-card-header">
+                  <div>
+                    <p className="eyebrow">Today Context</p>
+                    <h3>{macroCatalysts.length} macro events</h3>
+                  </div>
+                </div>
+                <div className="workspace-stock-list">
+                  {macroCatalysts.length === 0 ? (
+                    <p className="draft-empty-state">No macro catalysts saved yet.</p>
+                  ) : (
+                    macroCatalysts.map((event) => (
+                      <button
+                        key={`macro-${event.event_id}`}
+                        className={`workspace-stock-item ${
+                          editingCatalystEvent.eventId === event.event_id ? "selected-list-item" : ""
+                        }`}
+                        onClick={() => {
+                          setEditingCatalystEvent(event.payload);
+                          setCatalystTagsInput(event.payload.tags.join(", "));
                         }}
                       >
-                        Seed Trade Plan
+                        <div className="triggered-alert-header">
+                          <strong>{event.payload.headline}</strong>
+                          <span className="triggered-alert-badge">{event.payload.eventType}</span>
+                        </div>
+                        <span>{event.payload.eventDate || "No date"} · {event.payload.timeLabel || "No time"}</span>
+                        <span>{event.payload.notes || "No notes saved."}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </aside>
+
+              <div className="workspace-main">
+                <div className="workspace-summary-grid">
+                  <article className="snapshot-card">
+                    <span className="summary-label">Macro</span>
+                    <strong>{macroCatalysts.length}</strong>
+                    <small>CPI, FOMC, nonfarm payrolls, and other market-wide events</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Watchlist Events</span>
+                    <strong>{watchlistCatalysts.length}</strong>
+                    <small>Earnings, dividends, splits, options expiry, and news tags on your board</small>
+                  </article>
+                  <article className="snapshot-card">
+                    <span className="summary-label">Selected Ticker</span>
+                    <strong>{selectedTrackedStock?.ticker ?? "None"}</strong>
+                    <small>
+                      {selectedTrackedStock
+                        ? `${selectedTickerCatalysts.length} saved catalysts`
+                        : "Select a ticker elsewhere to see ticker-specific catalyst overlap"}
+                    </small>
+                  </article>
+                </div>
+
+                <section className="panel-card focus-editor-card">
+                  <div className="compact-card-header">
+                    <div>
+                      <p className="eyebrow">Catalyst Editor</p>
+                      <h3>{editingCatalystEvent.headline || "New catalyst event"}</h3>
+                    </div>
+                  </div>
+
+                  <div className="focus-editor-grid">
+                    <label>
+                      <span>Scope</span>
+                      <select
+                        value={editingCatalystEvent.scope}
+                        onChange={(event) =>
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            scope: event.target.value as CatalystEventDraft["scope"],
+                            ticker: event.target.value === "macro" ? "" : editingCatalystEvent.ticker,
+                            eventType:
+                              event.target.value === "macro"
+                                ? "macro_cpi"
+                                : editingCatalystEvent.eventType === "macro_cpi" ||
+                                    editingCatalystEvent.eventType === "macro_fomc" ||
+                                    editingCatalystEvent.eventType === "macro_nfp"
+                                  ? "earnings"
+                                  : editingCatalystEvent.eventType,
+                          })
+                        }
+                      >
+                        <option value="macro">Macro</option>
+                        <option value="ticker">Ticker</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Ticker</span>
+                      <input
+                        value={editingCatalystEvent.ticker}
+                        onChange={(event) =>
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            ticker: event.target.value.toUpperCase(),
+                          })
+                        }
+                        placeholder={editingCatalystEvent.scope === "macro" ? "Leave blank for macro" : "e.g. AAPL"}
+                        disabled={editingCatalystEvent.scope === "macro"}
+                      />
+                    </label>
+                    <label>
+                      <span>Event Type</span>
+                      <select
+                        value={editingCatalystEvent.eventType}
+                        onChange={(event) =>
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            eventType: event.target.value as CatalystEventDraft["eventType"],
+                          })
+                        }
+                      >
+                        {editingCatalystEvent.scope === "macro" ? (
+                          <>
+                            <option value="macro_cpi">CPI</option>
+                            <option value="macro_fomc">FOMC</option>
+                            <option value="macro_nfp">Nonfarm Payrolls</option>
+                            <option value="news_tag">Macro News Tag</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="earnings">Earnings</option>
+                            <option value="ex_dividend">Ex-Dividend</option>
+                            <option value="split">Split</option>
+                            <option value="options_expiry">Options Expiry</option>
+                            <option value="news_tag">News Tag</option>
+                          </>
+                        )}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Event Date</span>
+                      <input
+                        value={editingCatalystEvent.eventDate}
+                        onChange={(event) =>
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            eventDate: event.target.value,
+                          })
+                        }
+                        placeholder="e.g. 2026-06-12"
+                      />
+                    </label>
+                    <label>
+                      <span>Time Label</span>
+                      <input
+                        value={editingCatalystEvent.timeLabel}
+                        onChange={(event) =>
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            timeLabel: event.target.value,
+                          })
+                        }
+                        placeholder="e.g. Pre-market, 11:00 ET"
+                      />
+                    </label>
+                    <label className="trade-plan-wide">
+                      <span>Headline</span>
+                      <input
+                        value={editingCatalystEvent.headline}
+                        onChange={(event) =>
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            headline: event.target.value,
+                          })
+                        }
+                        placeholder="e.g. NVDA earnings after the close"
+                      />
+                    </label>
+                    <label className="trade-plan-wide">
+                      <span>Tags</span>
+                      <input
+                        value={catalystTagsInput}
+                        onChange={(event) => {
+                          setCatalystTagsInput(event.target.value);
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            tags: event.target.value
+                              .split(",")
+                              .map((tag) => tag.trim())
+                              .filter(Boolean),
+                          });
+                        }}
+                        placeholder="e.g. inflation, rates, AI, guidance"
+                      />
+                    </label>
+                    <label className="trade-plan-wide">
+                      <span>Notes</span>
+                      <textarea
+                        value={editingCatalystEvent.notes}
+                        onChange={(event) =>
+                          setEditingCatalystEvent({
+                            ...editingCatalystEvent,
+                            notes: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <div className="trade-plan-actions">
+                    <button
+                      className="refresh-button"
+                      onClick={() => void persistCatalystEvent()}
+                      disabled={savingCatalystEvent}
+                    >
+                      {savingCatalystEvent ? "Saving..." : "Save Catalyst"}
+                    </button>
+                    {editingCatalystEvent.eventId ? (
+                      <button
+                        className="ghost-button"
+                        onClick={() => void deleteCatalystEvent(editingCatalystEvent.eventId!)}
+                        disabled={savingCatalystEvent}
+                      >
+                        Delete Catalyst
+                      </button>
+                    ) : null}
+                    <button
+                      className="ghost-button"
+                      onClick={() => {
+                        setEditingCatalystEvent(buildEmptyCatalystEvent());
+                        setCatalystTagsInput("");
+                      }}
+                      disabled={savingCatalystEvent}
+                    >
+                      New Event
+                    </button>
+                  </div>
+                </section>
+
+                <section className="panel-card focus-column">
+                  <div className="compact-card-header">
+                    <div>
+                      <p className="eyebrow">Catalyst Calendar</p>
+                      <h3>
+                        {catalystView === "today"
+                          ? `Today · ${todayCatalysts.length} event${todayCatalysts.length !== 1 ? "s" : ""}`
+                          : catalystView === "this_week"
+                            ? `This Week · ${thisWeekCatalysts.length} event${thisWeekCatalysts.length !== 1 ? "s" : ""}`
+                            : `By Ticker · ${Object.keys(byTickerMap).length} group${Object.keys(byTickerMap).length !== 1 ? "s" : ""}`}
+                      </h3>
+                    </div>
+                    <div className="catalyst-view-tabs">
+                      <button
+                        className={`catalyst-tab-btn ${catalystView === "today" ? "active" : ""}`}
+                        onClick={() => setCatalystView("today")}
+                      >
+                        Today
                       </button>
                       <button
-                        className="ghost-button"
-                        disabled={!hasUsablePrice(stock)}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSelectedSymbol(stock.ticker);
-                          setAlertRuleDraft(buildAlertRuleDraft(stock));
-                        }}
+                        className={`catalyst-tab-btn ${catalystView === "this_week" ? "active" : ""}`}
+                        onClick={() => setCatalystView("this_week")}
                       >
-                        Create Alert
+                        This Week
+                      </button>
+                      <button
+                        className={`catalyst-tab-btn ${catalystView === "by_ticker" ? "active" : ""}`}
+                        onClick={() => setCatalystView("by_ticker")}
+                      >
+                        By Ticker
                       </button>
                     </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
+                  </div>
 
-        <aside className="detail-panel">
-          <DetailPanel
-            selected={selected}
-            savedDrafts={savedDrafts}
-            groupedAlerts={groupedAlerts}
-            triggeredAlerts={triggeredAlerts}
-            savedJournalEntries={savedJournalEntries}
-            tickerNote={tickerNote}
-            editingNote={editingNote}
-            savingTickerNote={savingTickerNote}
-            hasMoreAlerts={hasMoreAlerts}
-            hasMoreJournal={hasMoreJournal}
-            onShowChart={() => setShowChart(true)}
-            onTradePlan={() => selected && hasUsablePrice(selected) && setTradePlanDraft(buildTradePlanDraft(selected))}
-            onAlertRule={() => selected && hasUsablePrice(selected) && setAlertRuleDraft(buildAlertRuleDraft(selected))}
-            onJournal={() => selected && setJournalDraft(buildJournalDraft(selected))}
-            onRetryBootstrap={() => selected && void retryBootstrap(selected.ticker)}
-            retryingBootstrap={retryingBootstrap}
-            onTickerNoteChange={(next) => setEditingNote(next)}
-            onSaveTickerNote={() => void persistTickerNote()}
-            onLoadDraft={(draft) => setTradePlanDraft(draft)}
-            onEditAlertRule={(rule) =>
-              setAlertRuleDraft({ ...rule.payload, ruleId: rule.rule_id })
-            }
-            onToggleAlertRule={(ruleId, enabled) =>
-              void toggleAlertRuleEnabled(ruleId, enabled)
-            }
-            onDeleteAlertRule={(ruleId) => void deleteAlertRule(ruleId)}
-            onLoadMoreAlerts={() => void loadTriggeredAlerts(alertsOffset + ALERTS_PAGE)}
-            onLoadMoreJournal={() => void loadJournalEntries(journalOffset + JOURNAL_PAGE)}
-          />
-        </aside>
-      </section>
+                  {catalystView === "today" || catalystView === "this_week" ? (
+                    <div className="focus-entry-list">
+                      {(catalystView === "today" ? todayCatalysts : thisWeekCatalysts).length === 0 ? (
+                        <p className="draft-empty-state">
+                          {catalystView === "today"
+                            ? "No events scheduled for today."
+                            : "No events in the next 7 days."}
+                        </p>
+                      ) : (
+                        (catalystView === "today" ? todayCatalysts : thisWeekCatalysts).map((event) => (
+                          <button
+                            key={`cv-${event.event_id}`}
+                            className={`saved-draft-item catalyst-calendar-item ${
+                              editingCatalystEvent.eventId === event.event_id ? "selected-list-item" : ""
+                            }`}
+                            onClick={() => {
+                              setEditingCatalystEvent(event.payload);
+                              setCatalystTagsInput(event.payload.tags.join(", "));
+                            }}
+                          >
+                            <div className="triggered-alert-header">
+                              <strong>{event.payload.headline}</strong>
+                              <span className="triggered-alert-badge">{event.payload.eventType}</span>
+                            </div>
+                            <span className="catalyst-meta-line">
+                              <span className={`catalyst-scope-tag ${event.payload.scope}`}>
+                                {event.payload.scope === "macro" ? "Macro" : event.ticker}
+                              </span>
+                              {event.payload.eventDate && <span>{event.payload.eventDate}</span>}
+                              {event.payload.timeLabel && <span>{event.payload.timeLabel}</span>}
+                            </span>
+                            {event.payload.tags.length > 0 && (
+                              <span className="catalyst-tags">
+                                {event.payload.tags.map((tag) => (
+                                  <span key={tag} className="catalyst-tag-chip">{tag}</span>
+                                ))}
+                              </span>
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : (
+                    <div className="focus-entry-list">
+                      {Object.keys(byTickerMap).length === 0 ? (
+                        <p className="draft-empty-state">Start by entering a macro or ticker catalyst.</p>
+                      ) : (
+                        Object.entries(byTickerMap)
+                          .sort(([a], [b]) => (a === "__macro__" ? -1 : b === "__macro__" ? 1 : a.localeCompare(b)))
+                          .map(([key, events]) => (
+                            <div key={`group-${key}`} className="catalyst-ticker-group">
+                              <p className="catalyst-group-label">
+                                {key === "__macro__" ? "Macro" : key}
+                                <span className="strategy-count">{events.length}</span>
+                              </p>
+                              {events
+                                .slice()
+                                .sort((a, b) => (a.payload.eventDate < b.payload.eventDate ? -1 : 1))
+                                .map((event) => (
+                                  <button
+                                    key={`bt-${event.event_id}`}
+                                    className={`saved-draft-item catalyst-calendar-item ${
+                                      editingCatalystEvent.eventId === event.event_id ? "selected-list-item" : ""
+                                    }`}
+                                    onClick={() => {
+                                      setEditingCatalystEvent(event.payload);
+                                      setCatalystTagsInput(event.payload.tags.join(", "));
+                                    }}
+                                  >
+                                    <div className="triggered-alert-header">
+                                      <strong>{event.payload.headline}</strong>
+                                      <span className="triggered-alert-badge">{event.payload.eventType}</span>
+                                    </div>
+                                    <span className="catalyst-meta-line">
+                                      {event.payload.eventDate && <span>{event.payload.eventDate}</span>}
+                                      {event.payload.timeLabel && <span>{event.payload.timeLabel}</span>}
+                                    </span>
+                                    {event.payload.tags.length > 0 && (
+                                      <span className="catalyst-tags">
+                                        {event.payload.tags.map((tag) => (
+                                          <span key={tag} className="catalyst-tag-chip">{tag}</span>
+                                        ))}
+                                      </span>
+                                    )}
+                                  </button>
+                                ))}
+                            </div>
+                          ))
+                      )}
+                    </div>
+                  )}
+                </section>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeView === "trades" ? (
+          <section className="tab-panel leader-panel">
+            <div className="tab-panel-header">
+              <div>
+                <p className="eyebrow">Lifecycle Tracking</p>
+                <h2>Trades</h2>
+              </div>
+              <div className="workspace-controls">
+                <span className="strategy-count">{trades.length} tracked</span>
+              </div>
+            </div>
+            <FilterStrip
+              view="trades"
+              tradeFilters={tradeFilters}
+              onTradeFilters={setTradeFilters}
+              presets={savedPresets.filter((p) => p.view === "trades")}
+              onSavePreset={(name) => savePreset(name, "trades")}
+              onDeletePreset={deletePreset}
+              onApplyPreset={applyPreset}
+              filteredCount={filteredTrades.length}
+              totalCount={trades.length}
+            />
+            <TradeLifecyclePanel
+              trades={filteredTrades}
+              stocks={stocks}
+              catalystEvents={catalystEvents}
+              onSave={(trade) => persistTrade(trade)}
+              onDelete={(tradeId) => deleteTrade(tradeId)}
+            />
+          </section>
+        ) : null}
+
+        {activeView === "review" ? (
+          <section className="tab-panel leader-panel">
+            <div className="tab-panel-header">
+              <div>
+                <p className="eyebrow">Self-Coaching</p>
+                <h2>Review</h2>
+              </div>
+              <div className="workspace-controls">
+                {reviewMetrics && (
+                  <span className="strategy-count">
+                    {reviewMetrics.total_closed} closed trades
+                  </span>
+                )}
+              </div>
+            </div>
+            <ReviewPanel metrics={reviewMetrics} />
+          </section>
+        ) : null}
+      </main>
 
       {showChart && selected ? (
         <StockChartModal stock={selected} onClose={() => setShowChart(false)} />

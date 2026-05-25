@@ -8,6 +8,8 @@ import type {
 } from "../types";
 import type { StockCard } from "../types";
 
+const LS_ACCOUNT_SIZE = "msd:account-size";
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const STAGES: TradeStage[] = [
@@ -93,6 +95,7 @@ function buildEmptyTrade(ticker = ""): TradeDraft {
     entryPrice: "",
     stopLoss: "",
     targetPrice: "",
+    riskPercent: "",
     actualEntry: "",
     actualExit: "",
     outcomeTag: "open",
@@ -149,6 +152,63 @@ function StageStepper({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ─── P&L Summary ──────────────────────────────────────────────────────────────
+
+function PnlSummary({ trade }: { trade: TradeDraft }) {
+  const plannedEntry = parseFloat(trade.entryPrice);
+  const plannedStop = parseFloat(trade.stopLoss);
+  const actualEntry = parseFloat(trade.actualEntry);
+  const actualExit = parseFloat(trade.actualExit);
+
+  const planRisk = Math.abs(plannedEntry - plannedStop);
+  if (!planRisk || !trade.actualEntry || !trade.actualExit || isNaN(actualEntry) || isNaN(actualExit)) {
+    return null;
+  }
+
+  const actualR = (actualExit - actualEntry) / planRisk;
+
+  const accountNum = parseFloat((localStorage.getItem(LS_ACCOUNT_SIZE) ?? "").replace(/,/g, "")) || 0;
+  const riskPctNum = parseFloat(trade.riskPercent) || 0;
+  const dollarRisk = accountNum > 0 && riskPctNum > 0 ? accountNum * (riskPctNum / 100) : 0;
+  const sharesCalc = dollarRisk > 0 ? Math.floor(dollarRisk / planRisk) : 0;
+  const dollarPnL = sharesCalc > 0 ? sharesCalc * (actualExit - actualEntry) : null;
+
+  return (
+    <div className="pnl-summary">
+      <p className="stage-section-label" style={{ marginTop: 12 }}>Actual P&L</p>
+      <div className="pnl-grid">
+        <div className="pnl-cell">
+          <span>Actual R</span>
+          <strong className={actualR > 0 ? "pnl-positive" : actualR < 0 ? "pnl-negative" : ""}>
+            {actualR >= 0 ? "+" : ""}{actualR.toFixed(2)}R
+          </strong>
+        </div>
+        <div className="pnl-cell">
+          <span>Plan Risk / Share</span>
+          <strong>${planRisk.toFixed(2)}</strong>
+        </div>
+        {sharesCalc > 0 && (
+          <div className="pnl-cell">
+            <span>Shares</span>
+            <strong>{sharesCalc.toLocaleString()}</strong>
+          </div>
+        )}
+        {dollarPnL !== null && (
+          <div className="pnl-cell">
+            <span>Dollar P&L</span>
+            <strong className={dollarPnL > 0 ? "pnl-positive" : dollarPnL < 0 ? "pnl-negative" : ""}>
+              {dollarPnL >= 0 ? "+" : "-"}${Math.abs(dollarPnL).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </strong>
+          </div>
+        )}
+      </div>
+      {accountNum === 0 && (
+        <p className="pnl-hint">Set account size in Trade Plan to see shares and dollar P&L.</p>
+      )}
     </div>
   );
 }
@@ -223,6 +283,14 @@ function StageContent({
                 value={trade.targetPrice}
                 onChange={(e) => onChange({ ...trade, targetPrice: e.target.value })}
                 placeholder="e.g. 198.00"
+              />
+            </label>
+            <label>
+              Risk %
+              <input
+                value={trade.riskPercent}
+                onChange={(e) => onChange({ ...trade, riskPercent: e.target.value })}
+                placeholder="e.g. 1.0"
               />
             </label>
             <div className={`stage-rr-badge ${rrOk ? "ok" : risk > 0 ? "warn" : ""}`}>
@@ -302,6 +370,10 @@ function StageContent({
             })}
           </div>
         </>
+      )}
+
+      {(trade.stage === "exited" || trade.stage === "reviewed") && (
+        <PnlSummary trade={trade} />
       )}
 
       <p className="stage-section-label" style={{ marginTop: trade.stage === "idea" ? 16 : 12 }}>

@@ -292,6 +292,7 @@ export interface TradeDraft {
   entryPrice: string;
   stopLoss: string;
   targetPrice: string;
+  riskPercent: string;
   actualEntry: string;
   actualExit: string;
   outcomeTag: "open" | "win" | "loss" | "scratch";

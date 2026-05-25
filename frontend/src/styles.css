@@ -2002,7 +2002,7 @@ textarea {
 
 .stage-levels-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr auto;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
   gap: 10px;
   align-items: end;
 }
@@ -2745,4 +2745,39 @@ textarea {
   background: rgba(255, 184, 77, 0.1);
   border-radius: 6px;
   border-left: 2px solid #ffb84d;
+}
+
+.pnl-summary {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 14px;
+}
+.pnl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.pnl-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pnl-cell span {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.pnl-cell strong {
+  font-size: 1rem;
+  color: #f2f5f9;
+}
+.pnl-positive { color: #4ade80; }
+.pnl-negative { color: #f87171; }
+.pnl-hint {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.3);
+  margin: 8px 0 0;
 }

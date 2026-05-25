@@ -5,19 +5,30 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.domain.models import (
+    SaveCatalystEventRequest,
     EndOfDayDigest,
+    FocusQueueEntryView,
+    ReviewMetrics,
+    SaveLeaderHoldingRequest,
+    SaveFocusQueueEntryRequest,
     SaveJournalEntryRequest,
     SaveAlertRuleRequest,
     SaveTickerNoteRequest,
     SaveUrgencySettingsRequest,
     SaveTradePlanDraftRequest,
+    SaveTradeRequest,
+    StoredCatalystEvent,
+    StoredLeaderHolding,
     StoredAlertRule,
     StoredJournalEntry,
     StoredTickerNote,
+    StoredTrade,
     StoredTriggeredAlert,
     StoredTradePlanDraft,
     StoredUrgencySettings,
+    ThesisOutcomeSummary,
     TickerValidationResult,
+    UpdateAlertTaskRequest,
     WatchlistMutation,
 )
 
@@ -150,6 +161,13 @@ def register_routes(app: FastAPI) -> None:
             for row in rows
         ]
 
+    @app.patch("/api/triggered-alerts/{user_id}/{alert_id}")
+    async def update_alert_task_status(user_id: str, alert_id: str, body: UpdateAlertTaskRequest):
+        updated = app.state.alert_engine.update_alert_task_status(
+            user_id, alert_id, body.task_status, body.snoozed_until
+        )
+        return {"ok": updated, "alert_id": alert_id}
+
     @app.get("/api/journal-entries/{user_id}", response_model=list[StoredJournalEntry])
     async def list_journal_entries(user_id: str, limit: int = 12, offset: int = 0):
         rows = app.state.dashboard_state.list_journal_entries(user_id, limit=limit, offset=offset)
@@ -215,6 +233,71 @@ def register_routes(app: FastAPI) -> None:
         )
         return {"ok": True, "updated_at": updated_at}
 
+    @app.get("/api/focus-queue/{user_id}", response_model=list[FocusQueueEntryView])
+    async def list_focus_queue_entries(user_id: str):
+        return app.state.dashboard_state.list_focus_queue_entries(user_id)
+
+    @app.get("/api/focus-queue/{user_id}/{ticker}", response_model=FocusQueueEntryView)
+    async def get_focus_queue_entry(user_id: str, ticker: str):
+        return app.state.dashboard_state.load_focus_queue_entry(user_id, ticker)
+
+    @app.post("/api/focus-queue")
+    async def save_focus_queue_entry(payload: SaveFocusQueueEntryRequest):
+        updated_at = datetime.now(timezone.utc).isoformat()
+        app.state.dashboard_state.save_focus_queue_entry(
+            payload.user_id,
+            payload.entry.model_dump(),
+            updated_at,
+        )
+        return {"ok": True, "updated_at": updated_at}
+
+    @app.delete("/api/focus-queue/{user_id}/{ticker}")
+    async def restore_generated_focus_queue_entry(user_id: str, ticker: str):
+        deleted = app.state.dashboard_state.delete_focus_queue_entry(user_id, ticker)
+        return {"ok": True, "restored": deleted, "ticker": ticker.upper()}
+
+    @app.get("/api/leader-holdings/{user_id}", response_model=list[StoredLeaderHolding])
+    async def list_leader_holdings(user_id: str):
+        return app.state.dashboard_state.list_leader_holdings(user_id)
+
+    @app.post("/api/leader-holdings")
+    async def save_leader_holding(payload: SaveLeaderHoldingRequest):
+        updated_at = datetime.now(timezone.utc).isoformat()
+        app.state.dashboard_state.save_leader_holding(
+            payload.user_id,
+            payload.holding.model_dump(),
+            updated_at,
+        )
+        return {"ok": True, "updated_at": updated_at}
+
+    @app.delete("/api/leader-holdings/{user_id}/{ticker}")
+    async def delete_leader_holding(user_id: str, ticker: str):
+        deleted = app.state.dashboard_state.delete_leader_holding(user_id, ticker)
+        return {"ok": deleted, "ticker": ticker.upper()}
+
+    @app.get("/api/catalyst-events/{user_id}", response_model=list[StoredCatalystEvent])
+    async def list_catalyst_events(user_id: str):
+        return app.state.dashboard_state.list_catalyst_events(user_id)
+
+    @app.post("/api/catalyst-events")
+    async def save_catalyst_event(payload: SaveCatalystEventRequest):
+        updated_at = datetime.now(timezone.utc).isoformat()
+        app.state.dashboard_state.save_catalyst_event(
+            payload.user_id,
+            payload.event.model_dump(),
+            updated_at,
+        )
+        return {"ok": True, "updated_at": updated_at}
+
+    @app.delete("/api/catalyst-events/{user_id}/{event_id}")
+    async def delete_catalyst_event(user_id: str, event_id: str):
+        deleted = app.state.dashboard_state.delete_catalyst_event(user_id, event_id)
+        return {"ok": deleted, "event_id": event_id}
+
+    @app.get("/api/thesis-outcome/{user_id}/{ticker}", response_model=ThesisOutcomeSummary)
+    async def get_thesis_outcome_summary(user_id: str, ticker: str):
+        return app.state.dashboard_state.build_thesis_outcome_summary(user_id, ticker)
+
     @app.get("/api/urgency-settings/{user_id}", response_model=StoredUrgencySettings)
     async def get_urgency_settings(user_id: str):
         current = app.state.dashboard_state.load_urgency_settings(user_id)
@@ -247,6 +330,28 @@ def register_routes(app: FastAPI) -> None:
         body = app.state.dashboard_state.render_end_of_day_digest_text(digest)
         app.state.notifier.send(channel, f"End-of-Day Digest · {user_id}", body)
         return {"ok": True, "channel": channel, "generated_at": digest.generated_at}
+
+    @app.get("/api/review-metrics/{user_id}", response_model=ReviewMetrics)
+    async def get_review_metrics(user_id: str):
+        alerts = app.state.alert_engine.list_triggered_alerts(user_id, limit=500, offset=0)
+        return app.state.dashboard_state.build_review_metrics(user_id, alerts)
+
+    @app.get("/api/trades/{user_id}", response_model=list[StoredTrade])
+    async def list_trades(user_id: str):
+        return app.state.dashboard_state.list_trades(user_id)
+
+    @app.post("/api/trades")
+    async def save_trade(body: SaveTradeRequest):
+        updated_at = datetime.now(timezone.utc).isoformat()
+        trade_id = app.state.dashboard_state.save_trade(
+            body.user_id, body.trade.model_dump(), updated_at
+        )
+        return {"ok": True, "trade_id": trade_id}
+
+    @app.delete("/api/trades/{user_id}/{trade_id}")
+    async def delete_trade(user_id: str, trade_id: str):
+        deleted = app.state.dashboard_state.delete_trade(user_id, trade_id)
+        return {"ok": deleted, "trade_id": trade_id}
 
     @app.get("/api/stocks/{ticker}/history")
     async def get_stock_history(ticker: str, range: str = "1M"):

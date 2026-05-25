@@ -66,12 +66,22 @@ class TickerValidationResult(BaseModel):
 
 class TradePlanDraftPayload(BaseModel):
     ticker: str
+    setupType: str = "breakout"
     entryPrice: str
     stopLoss: str
     targetPrice: str
     thesis: str
     riskPercent: str
     positionSizeUsd: str
+    checklist: dict = Field(
+        default_factory=lambda: {
+            "hasCatalyst": False,
+            "atKeyLevel": False,
+            "rrSufficient": False,
+            "marketAligned": False,
+            "withinSession": False,
+        }
+    )
 
 
 class SaveTradePlanDraftRequest(BaseModel):
@@ -141,12 +151,25 @@ class StoredAlertRule(BaseModel):
 
 class TriggeredAlertPayload(BaseModel):
     rule_id: str | None = None
+    alert_id: str | None = None
     ticker: str
     condition: str
     threshold: str
     channel: str
     triggered_value: str
     message: str
+    # Market snapshot at trigger time
+    snapshot_price: float | None = None
+    snapshot_volume: int | None = None
+    snapshot_change_pct: float | None = None
+    # Task lifecycle
+    task_status: str = "pending"  # pending | snoozed | dismissed | acted
+    snoozed_until: str | None = None
+
+
+class UpdateAlertTaskRequest(BaseModel):
+    task_status: str
+    snoozed_until: str | None = None
 
 
 class StoredTriggeredAlert(BaseModel):
@@ -161,6 +184,7 @@ class JournalEntryPayload(BaseModel):
     thesis: str
     review: str
     outcome: str
+    outcomeTag: Literal["open", "win", "loss", "scratch"] = "open"
     entryPrice: str = ""
     stopLoss: str = ""
     targetPrice: str = ""
@@ -176,6 +200,20 @@ class StoredJournalEntry(BaseModel):
     ticker: str
     updated_at: str
     payload: JournalEntryPayload
+
+
+class ThesisOutcomeSummary(BaseModel):
+    ticker: str
+    strategy_tag: str = ""
+    current_thesis: str = ""
+    latest_review: str = ""
+    latest_outcome: str = ""
+    latest_outcome_tag: Literal["open", "win", "loss", "scratch"] = "open"
+    latest_updated_at: str = ""
+    total_closed_entries: int = 0
+    win_count: int = 0
+    loss_count: int = 0
+    scratch_count: int = 0
 
 
 class TickerNotePayload(BaseModel):
@@ -194,6 +232,98 @@ class StoredTickerNote(BaseModel):
     ticker: str
     updated_at: str
     payload: TickerNotePayload
+
+
+class FocusQueueEntryPayload(BaseModel):
+    ticker: str
+    bucket: Literal["today_focus", "monitor", "ignore"] = "monitor"
+    whyOnList: str = ""
+    triggerCondition: str = ""
+    invalidationCondition: str = ""
+    catalystTag: str | None = None
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_ticker(cls, v: str) -> str:
+        return v.strip().upper()
+
+
+class SaveFocusQueueEntryRequest(BaseModel):
+    user_id: str
+    entry: FocusQueueEntryPayload
+
+
+class FocusQueueEntryView(BaseModel):
+    ticker: str
+    updated_at: str
+    source: Literal["generated", "saved"] = "generated"
+    payload: FocusQueueEntryPayload
+    generated_payload: FocusQueueEntryPayload
+
+
+class LeaderHoldingPayload(BaseModel):
+    ticker: str
+    positionStatus: Literal["holding", "new", "adding", "trimming", "closed"] = "holding"
+    conviction: Literal["light", "standard", "heavy"] = "standard"
+    timeHorizon: Literal["short", "swing", "mid"] = "swing"
+    entryZone: str = ""
+    thesis: str = ""
+    invalidatedWhen: str = ""
+    lastUpdatedAt: str = ""
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_leader_ticker(cls, v: str) -> str:
+        return v.strip().upper()
+
+
+class SaveLeaderHoldingRequest(BaseModel):
+    user_id: str
+    holding: LeaderHoldingPayload
+
+
+class StoredLeaderHolding(BaseModel):
+    ticker: str
+    updated_at: str
+    payload: LeaderHoldingPayload
+
+
+class CatalystEventPayload(BaseModel):
+    eventId: str | None = None
+    scope: Literal["macro", "ticker"] = "ticker"
+    ticker: str = ""
+    eventType: Literal[
+        "earnings",
+        "macro_cpi",
+        "macro_fomc",
+        "macro_nfp",
+        "ex_dividend",
+        "split",
+        "options_expiry",
+        "news_tag",
+    ] = "news_tag"
+    headline: str = ""
+    eventDate: str = ""
+    timeLabel: str = ""
+    tags: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_catalyst_ticker(cls, v: str) -> str:
+        return v.strip().upper()
+
+
+class SaveCatalystEventRequest(BaseModel):
+    user_id: str
+    event: CatalystEventPayload
+
+
+class StoredCatalystEvent(BaseModel):
+    event_id: str
+    ticker: str
+    updated_at: str
+    payload: CatalystEventPayload
 
 
 class UrgencySettingsPayload(BaseModel):
@@ -270,3 +400,87 @@ class CandlePoint(BaseModel):
     high: float
     low: float
     close: float
+
+
+class TradeLifecyclePayload(BaseModel):
+    tradeId: str | None = None
+    ticker: str
+    setupType: str = "breakout"
+    stage: Literal["idea", "planned", "armed", "entered", "exited", "reviewed"] = "idea"
+    stageNotes: dict = Field(default_factory=dict)
+    stageTimestamps: dict = Field(default_factory=dict)
+    entryPrice: str = ""
+    stopLoss: str = ""
+    targetPrice: str = ""
+    actualEntry: str = ""
+    actualExit: str = ""
+    outcomeTag: Literal["open", "win", "loss", "scratch"] = "open"
+    mistakeTags: list[str] = Field(default_factory=list)
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_trade_ticker(cls, v: str) -> str:
+        return v.strip().upper()
+
+
+class SaveTradeRequest(BaseModel):
+    user_id: str
+    trade: TradeLifecyclePayload
+
+
+class StoredTrade(BaseModel):
+    trade_id: str
+    ticker: str
+    updated_at: str
+    payload: TradeLifecyclePayload
+
+
+class SetupStat(BaseModel):
+    setup_type: str
+    count: int
+    win: int
+    loss: int
+    scratch: int
+    win_rate: float
+    avg_winner_r: float | None = None
+
+
+class SessionBucket(BaseModel):
+    label: str
+    count: int
+    win: int
+    loss: int
+    scratch: int
+    win_rate: float
+
+
+class AlertUtilityStat(BaseModel):
+    condition: str
+    total: int
+    acted: int
+    dismissed: int
+    act_rate: float
+
+
+class MistakeTagStat(BaseModel):
+    tag: str
+    label: str
+    count: int
+
+
+class ReviewMetrics(BaseModel):
+    user_id: str
+    generated_at: str
+    total_closed: int
+    win_count: int
+    loss_count: int
+    scratch_count: int
+    overall_win_rate: float
+    avg_winner_r: float | None = None
+    avg_loser_r: float | None = None
+    by_setup: list[SetupStat]
+    by_session: list[SessionBucket]
+    alert_utility: list[AlertUtilityStat]
+    mistake_tags: list[MistakeTagStat]
+    total_alerts_fired: int
+    alert_acted_rate: float

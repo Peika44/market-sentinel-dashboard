@@ -86,6 +86,39 @@ class SQLiteStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS focus_queue_entries (
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, ticker)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS leader_holdings (
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, ticker)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalyst_events (
+                    event_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS price_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
@@ -95,6 +128,18 @@ class SQLiteStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_price_history_ticker ON price_history(ticker)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trades (
+                    trade_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    stage TEXT NOT NULL DEFAULT 'idea',
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
             )
             conn.commit()
 
@@ -348,6 +393,31 @@ class SQLiteStore:
             )
             conn.commit()
 
+    def update_triggered_alert_status(
+        self,
+        user_id: str,
+        alert_id: str,
+        task_status: str,
+        snoozed_until: str | None,
+    ) -> bool:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT rowid, payload_json FROM triggered_alerts WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload_json"])
+                if payload.get("alert_id") == alert_id:
+                    payload["task_status"] = task_status
+                    payload["snoozed_until"] = snoozed_until
+                    conn.execute(
+                        "UPDATE triggered_alerts SET payload_json = ? WHERE rowid = ?",
+                        (json.dumps(payload), row["rowid"]),
+                    )
+                    conn.commit()
+                    return True
+            return False
+
     def list_triggered_alerts(self, user_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
@@ -495,6 +565,174 @@ class SQLiteStore:
                 "payload": json.loads(row["payload_json"]),
             }
 
+    def save_focus_queue_entry(
+        self, user_id: str, ticker: str, payload: dict, updated_at: str
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO focus_queue_entries (user_id, ticker, payload_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, ticker)
+                DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                """,
+                (user_id, ticker.upper(), json.dumps(payload), updated_at),
+            )
+            conn.commit()
+
+    def load_focus_queue_entry(self, user_id: str, ticker: str) -> dict | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT ticker, payload_json, updated_at
+                FROM focus_queue_entries
+                WHERE user_id = ? AND ticker = ?
+                """,
+                (user_id, ticker.upper()),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "ticker": row["ticker"],
+                "updated_at": row["updated_at"],
+                "payload": json.loads(row["payload_json"]),
+            }
+
+    def list_focus_queue_entries(self, user_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, payload_json, updated_at
+                FROM focus_queue_entries
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            entries: list[dict] = []
+            for row in rows:
+                entries.append(
+                    {
+                        "ticker": row["ticker"],
+                        "updated_at": row["updated_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+            return entries
+
+    def delete_focus_queue_entry(self, user_id: str, ticker: str) -> bool:
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM focus_queue_entries
+                WHERE user_id = ? AND ticker = ?
+                """,
+                (user_id, ticker.upper()),
+            )
+            conn.commit()
+            return result.rowcount > 0
+
+    def save_leader_holding(
+        self, user_id: str, ticker: str, payload: dict, updated_at: str
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO leader_holdings (user_id, ticker, payload_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, ticker)
+                DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                """,
+                (user_id, ticker.upper(), json.dumps(payload), updated_at),
+            )
+            conn.commit()
+
+    def list_leader_holdings(self, user_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, payload_json, updated_at
+                FROM leader_holdings
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            holdings: list[dict] = []
+            for row in rows:
+                holdings.append(
+                    {
+                        "ticker": row["ticker"],
+                        "updated_at": row["updated_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+            return holdings
+
+    def delete_leader_holding(self, user_id: str, ticker: str) -> bool:
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM leader_holdings
+                WHERE user_id = ? AND ticker = ?
+                """,
+                (user_id, ticker.upper()),
+            )
+            conn.commit()
+            return result.rowcount > 0
+
+    def save_catalyst_event(self, user_id: str, payload: dict, updated_at: str) -> str:
+        event_id = str(payload.get("eventId") or f"catalyst_{uuid4().hex[:12]}")
+        payload["eventId"] = event_id
+        ticker = str(payload.get("ticker") or "").upper()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO catalyst_events (event_id, user_id, ticker, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(event_id)
+                DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                """,
+                (event_id, user_id, ticker, json.dumps(payload), updated_at),
+            )
+            conn.commit()
+            return event_id
+
+    def list_catalyst_events(self, user_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_id, ticker, payload_json, updated_at
+                FROM catalyst_events
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            events: list[dict] = []
+            for row in rows:
+                events.append(
+                    {
+                        "event_id": row["event_id"],
+                        "ticker": row["ticker"],
+                        "updated_at": row["updated_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+            return events
+
+    def delete_catalyst_event(self, user_id: str, event_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM catalyst_events
+                WHERE user_id = ? AND event_id = ?
+                """,
+                (user_id, event_id),
+            )
+            conn.commit()
+            return result.rowcount > 0
+
 
     def save_price_history_bulk(self, ticker: str, prices: list[float]) -> None:
         """Replace the stored price sequence for a ticker with the current in-memory deque."""
@@ -532,6 +770,52 @@ class SQLiteStore:
                 "SELECT DISTINCT ticker FROM price_history"
             ).fetchall()
         return [row["ticker"] for row in rows]
+
+    def save_trade(self, user_id: str, payload: dict, updated_at: str) -> str:
+        trade_id = str(payload.get("tradeId") or f"trade_{uuid4().hex[:12]}")
+        payload["tradeId"] = trade_id
+        ticker = str(payload["ticker"]).upper()
+        stage = str(payload.get("stage", "idea"))
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO trades (trade_id, user_id, ticker, stage, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (trade_id, user_id, ticker, stage, json.dumps(payload), updated_at),
+            )
+            conn.commit()
+        return trade_id
+
+    def list_trades(self, user_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT trade_id, ticker, payload_json, updated_at
+                FROM trades
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            return [
+                {
+                    "trade_id": row["trade_id"],
+                    "ticker": row["ticker"],
+                    "updated_at": row["updated_at"],
+                    "payload": json.loads(row["payload_json"]),
+                }
+                for row in rows
+            ]
+
+    def delete_trade(self, user_id: str, trade_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM trades WHERE user_id = ? AND trade_id = ?",
+                (user_id, trade_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
 
 __all__ = ["SQLiteStore"]

@@ -170,6 +170,78 @@ class DashboardStateTests(unittest.IsolatedAsyncioTestCase):
             "Netflix, Inc. Common Stock",
         )
 
+    def test_list_focus_queue_entries_generates_default_buckets(self) -> None:
+        store = self.make_store()
+        store.replace_watchlist("demo-user", ["AAPL", "AMD", "TSLA"])
+        cache = FakeCache()
+
+        with patch("app.services.dashboard.settings", make_settings(provider="synthetic")):
+            state = DashboardState(store, cache)
+            state.apply_event(
+                MarketEvent(
+                    ticker="AAPL",
+                    display_name="Apple",
+                    current_price=220.15,
+                    change_pct=4.8,
+                    volume=320_000,
+                    as_of=datetime(2026, 5, 23, 15, 30, tzinfo=timezone.utc),
+                )
+            )
+            state.apply_event(
+                MarketEvent(
+                    ticker="TSLA",
+                    display_name="Tesla",
+                    current_price=179.80,
+                    change_pct=1.2,
+                    volume=180_000,
+                    as_of=datetime(2026, 5, 23, 15, 31, tzinfo=timezone.utc),
+                )
+            )
+            entries = state.list_focus_queue_entries("demo-user")
+
+        bucket_by_ticker = {entry.ticker: entry.payload.bucket for entry in entries}
+        self.assertEqual(bucket_by_ticker["AAPL"], "today_focus")
+        self.assertEqual(bucket_by_ticker["TSLA"], "monitor")
+        self.assertEqual(bucket_by_ticker["AMD"], "monitor")
+        aapl_entry = next(entry for entry in entries if entry.ticker == "AAPL")
+        self.assertEqual(aapl_entry.source, "generated")
+        self.assertIn("deserves active screen time", aapl_entry.payload.whyOnList)
+
+    def test_focus_queue_saved_entry_overrides_generated_payload(self) -> None:
+        store = self.make_store()
+        store.replace_watchlist("demo-user", ["NVDA"])
+        cache = FakeCache()
+
+        with patch("app.services.dashboard.settings", make_settings(provider="synthetic")):
+            state = DashboardState(store, cache)
+            state.apply_event(
+                MarketEvent(
+                    ticker="NVDA",
+                    display_name="NVIDIA",
+                    current_price=118.40,
+                    change_pct=3.5,
+                    volume=410_000,
+                    as_of=datetime(2026, 5, 23, 15, 32, tzinfo=timezone.utc),
+                )
+            )
+            state.save_focus_queue_entry(
+                "demo-user",
+                {
+                    "ticker": "NVDA",
+                    "bucket": "ignore",
+                    "whyOnList": "Skipping this until after earnings comments settle.",
+                    "triggerCondition": "Revisit only if it retakes the opening range high.",
+                    "invalidationCondition": "Leave ignored if it fails to hold VWAP.",
+                },
+                "2026-05-23T18:00:00+00:00",
+            )
+            entry = state.load_focus_queue_entry("demo-user", "NVDA")
+
+        self.assertEqual(entry.source, "saved")
+        self.assertEqual(entry.payload.bucket, "ignore")
+        self.assertEqual(entry.generated_payload.bucket, "today_focus")
+        self.assertIn("active screen time", entry.generated_payload.whyOnList)
+
 
 if __name__ == "__main__":
     unittest.main()

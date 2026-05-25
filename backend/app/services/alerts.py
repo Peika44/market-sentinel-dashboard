@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from app.core.cache import RedisCache
 from app.domain.models import AlertRulePayload, MarketEvent
@@ -128,6 +129,7 @@ class AlertEngine:
 
             triggered_at = datetime.now(timezone.utc).isoformat()
             stored_payload = {
+                "alert_id": f"alrt_{uuid4().hex[:16]}",
                 "rule_id": rule_id,
                 "ticker": event.ticker.upper(),
                 "condition": payload.condition,
@@ -135,6 +137,11 @@ class AlertEngine:
                 "channel": payload.channel,
                 "triggered_value": f"{triggered_value:.2f}",
                 "message": message,
+                "snapshot_price": event.current_price,
+                "snapshot_volume": event.volume,
+                "snapshot_change_pct": event.change_pct,
+                "task_status": "pending",
+                "snoozed_until": None,
             }
             self._store.save_triggered_alert(
                 user_id,
@@ -167,6 +174,17 @@ class AlertEngine:
 
     def list_triggered_alerts(self, user_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
         return self._store.list_triggered_alerts(user_id, limit=limit, offset=offset)
+
+    def update_alert_task_status(
+        self,
+        user_id: str,
+        alert_id: str,
+        task_status: str,
+        snoozed_until: str | None,
+    ) -> bool:
+        return self._store.update_triggered_alert_status(
+            user_id, alert_id, task_status, snoozed_until
+        )
 
     @staticmethod
     def _parse_float(value: str) -> float | None:

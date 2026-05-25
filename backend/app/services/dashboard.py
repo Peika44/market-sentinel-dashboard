@@ -12,14 +12,28 @@ import httpx
 from app.core.cache import RedisCache
 from app.core.config import settings
 from app.domain.models import (
+    AlertUtilityStat,
     CandlePoint,
+    CatalystEventPayload,
     DashboardSnapshot,
     DigestMetric,
     EndOfDayDigest,
+    FocusQueueEntryPayload,
+    FocusQueueEntryView,
     IndexQuote,
+    LeaderHoldingPayload,
     MarketEvent,
+    MistakeTagStat,
+    ReviewMetrics,
+    SessionBucket,
+    SetupStat,
     StockCard,
+    StoredCatalystEvent,
+    StoredLeaderHolding,
+    StoredTrade,
     TickerValidationResult,
+    ThesisOutcomeSummary,
+    TradeLifecyclePayload,
     UrgencySettingsPayload,
 )
 from app.infra.storage import SQLiteStore
@@ -929,6 +943,348 @@ class DashboardState:
     def list_ticker_notes(self, user_id: str) -> list[dict]:
         return self._store.list_ticker_notes(user_id)
 
+    def save_focus_queue_entry(self, user_id: str, payload: dict, updated_at: str) -> None:
+        entry = FocusQueueEntryPayload.model_validate(payload)
+        self._store.save_focus_queue_entry(
+            user_id,
+            entry.ticker,
+            entry.model_dump(),
+            updated_at,
+        )
+
+    def delete_focus_queue_entry(self, user_id: str, ticker: str) -> bool:
+        return self._store.delete_focus_queue_entry(user_id, ticker)
+
+    def load_focus_queue_entry(self, user_id: str, ticker: str) -> FocusQueueEntryView:
+        generated = self._build_generated_focus_queue_entry(user_id, ticker)
+        saved = self._store.load_focus_queue_entry(user_id, ticker)
+        if saved is None:
+            return FocusQueueEntryView(
+                ticker=generated.ticker,
+                updated_at="",
+                source="generated",
+                payload=generated,
+                generated_payload=generated,
+            )
+        return FocusQueueEntryView(
+            ticker=saved["ticker"],
+            updated_at=saved["updated_at"],
+            source="saved",
+            payload=FocusQueueEntryPayload.model_validate(saved["payload"]),
+            generated_payload=generated,
+        )
+
+    def list_focus_queue_entries(self, user_id: str) -> list[FocusQueueEntryView]:
+        snapshot = self.build_snapshot(user_id)
+        saved_entries = {
+            row["ticker"]: row
+            for row in self._store.list_focus_queue_entries(user_id)
+        }
+        catalyst_events = self.list_catalyst_events(user_id)
+        entries: list[FocusQueueEntryView] = []
+        for stock in snapshot.stocks:
+            generated = self._build_generated_focus_queue_entry(
+                user_id, stock.ticker, snapshot=snapshot, catalyst_events=catalyst_events
+            )
+            saved = saved_entries.get(stock.ticker)
+            if saved is None:
+                entries.append(
+                    FocusQueueEntryView(
+                        ticker=stock.ticker,
+                        updated_at="",
+                        source="generated",
+                        payload=generated,
+                        generated_payload=generated,
+                    )
+                )
+                continue
+            entries.append(
+                FocusQueueEntryView(
+                    ticker=stock.ticker,
+                    updated_at=saved["updated_at"],
+                    source="saved",
+                    payload=FocusQueueEntryPayload.model_validate(saved["payload"]),
+                    generated_payload=generated,
+                )
+            )
+
+        bucket_rank = {"today_focus": 0, "monitor": 1, "ignore": 2}
+        entries.sort(
+            key=lambda entry: (
+                bucket_rank.get(entry.payload.bucket, 3),
+                -next(
+                    (stock.urgency_score for stock in snapshot.stocks if stock.ticker == entry.ticker),
+                    0.0,
+                ),
+                entry.ticker,
+            )
+        )
+        return entries
+
+    def _build_generated_focus_queue_entry(
+        self,
+        user_id: str,
+        ticker: str,
+        *,
+        snapshot: DashboardSnapshot | None = None,
+        catalyst_events: list[StoredCatalystEvent] | None = None,
+    ) -> FocusQueueEntryPayload:
+        current_snapshot = snapshot or self.build_snapshot(user_id)
+        stock = next(
+            (item for item in current_snapshot.stocks if item.ticker == ticker.upper()),
+            None,
+        )
+        if stock is None:
+            return FocusQueueEntryPayload(
+                ticker=ticker.upper(),
+                bucket="monitor",
+                whyOnList="Ticker is tracked, but no live dashboard snapshot is available yet.",
+                triggerCondition="Wait for a valid market update before promoting it.",
+                invalidationCondition="Remove it if the setup is no longer relevant to the session.",
+            )
+
+        bucket = self._focus_bucket_for_stock(user_id, stock)
+
+        # Catalyst boost: elevate bucket when high-priority events are upcoming
+        events = catalyst_events if catalyst_events is not None else self.list_catalyst_events(user_id)
+        boost, catalyst_label = self._get_catalyst_info(events, stock.ticker)
+        if boost in ("today_high", "week_high"):
+            if bucket == "ignore":
+                bucket = "monitor"
+            elif bucket == "monitor" and boost == "today_high":
+                bucket = "today_focus"
+
+        trigger_condition = self._focus_trigger_for_stock(stock, bucket)
+        invalidation_condition = self._focus_invalidation_for_stock(stock, bucket)
+        why_on_list = self._focus_reason_for_stock(stock, bucket)
+        if catalyst_label:
+            why_on_list += f" Catalyst: {catalyst_label}."
+
+        return FocusQueueEntryPayload(
+            ticker=stock.ticker,
+            bucket=bucket,
+            whyOnList=why_on_list,
+            triggerCondition=trigger_condition,
+            invalidationCondition=invalidation_condition,
+            catalystTag=catalyst_label if catalyst_label else None,
+        )
+
+    def _get_catalyst_info(
+        self,
+        catalyst_events: list[StoredCatalystEvent],
+        ticker: str,
+    ) -> tuple[str, str]:
+        """Return (boost_level, catalyst_label) for upcoming events in the next 7 days.
+
+        boost_level: "today_high" | "week_high" | "week_medium" | "none"
+        """
+        HIGH_PRIORITY = {"earnings", "macro_fomc", "news_tag"}
+
+        today = datetime.now(timezone.utc).date()
+        week_end = today + timedelta(days=7)
+
+        relevant = [
+            e for e in catalyst_events
+            if e.payload.scope == "macro" or e.ticker.upper() == ticker.upper()
+        ]
+
+        best_boost = "none"
+        labels: list[str] = []
+
+        for event in relevant:
+            try:
+                event_date = datetime.strptime(event.payload.eventDate, "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+
+            if event_date < today or event_date > week_end:
+                continue
+
+            is_today = event_date == today
+            is_high = event.payload.eventType in HIGH_PRIORITY
+
+            time_part = f" ({event.payload.timeLabel})" if event.payload.timeLabel else ""
+            labels.append(f"{event.payload.eventType}{time_part} · {event.payload.eventDate}")
+
+            if is_today and is_high and best_boost != "today_high":
+                best_boost = "today_high"
+            elif is_high and best_boost not in ("today_high", "week_high"):
+                best_boost = "week_high"
+            elif best_boost == "none":
+                best_boost = "week_medium"
+
+        label_str = "; ".join(labels[:2])
+        return best_boost, label_str
+
+    def _focus_bucket_for_stock(
+        self,
+        user_id: str,
+        stock: StockCard,
+    ) -> str:
+        urgency_settings = self.load_urgency_settings(user_id)
+        if stock.data_status == "waiting":
+            return "monitor"
+        if stock.data_status == "delayed":
+            return "ignore" if stock.urgency_score < urgency_settings.lowThreshold else "monitor"
+        if stock.urgency_score >= urgency_settings.highThreshold:
+            return "today_focus"
+        if stock.urgency_score >= urgency_settings.lowThreshold:
+            return "monitor"
+        return "ignore"
+
+    def _focus_reason_for_stock(self, stock: StockCard, bucket: str) -> str:
+        urgency_label = f"urgency {stock.urgency_score:.0f}"
+        price_label = (
+            f"{stock.change_pct:+.2f}%"
+            if stock.change_pct is not None
+            else "no usable price change yet"
+        )
+        if bucket == "today_focus":
+            return (
+                f"{stock.ticker} is live, ranked near the top of the board with {urgency_label}, "
+                f"and is already moving {price_label}. This deserves active screen time today."
+            )
+        if bucket == "monitor":
+            if stock.data_status == "waiting":
+                return (
+                    f"{stock.ticker} is on the watchlist, but the first market tick has not arrived yet. "
+                    "Keep it visible until the feed confirms whether the setup is real."
+                )
+            if stock.data_status == "delayed":
+                return (
+                    f"{stock.ticker} only has delayed or bootstrap coverage right now. "
+                    f"Keep it in monitor until live data confirms the current {urgency_label}."
+                )
+            return (
+                f"{stock.ticker} has some signal value with {urgency_label} and {price_label}, "
+                "but not enough confirmation yet to make it a primary focus name."
+            )
+        return (
+            f"{stock.ticker} is currently lower-priority with {urgency_label} and {price_label}. "
+            "Keep it off the main board unless the setup improves."
+        )
+
+    def _focus_trigger_for_stock(self, stock: StockCard, bucket: str) -> str:
+        if bucket == "today_focus":
+            return (
+                "Keep it in Today Focus while price stays active, live data remains healthy, "
+                "and the setup still matches your thesis."
+            )
+        if stock.data_status == "waiting":
+            return "Promote it once the first live tick arrives and the board urgency is confirmed."
+        if stock.data_status == "delayed":
+            return "Promote it after live streaming replaces delayed coverage and the setup still looks actionable."
+        return "Promote it if urgency rises further, price confirms, or a new catalyst makes it actionable."
+
+    def _focus_invalidation_for_stock(self, stock: StockCard, bucket: str) -> str:
+        if bucket == "today_focus":
+            return "Demote it if momentum fades, thesis breaks, or the tape shifts against the setup."
+        if bucket == "monitor":
+            return "Move it to Ignore for now if live confirmation never comes or the setup loses edge."
+        return "Bring it back only if urgency, price action, or your thesis materially improves."
+
+    def save_leader_holding(self, user_id: str, payload: dict, updated_at: str) -> None:
+        holding = LeaderHoldingPayload.model_validate(payload)
+        self._store.save_leader_holding(
+            user_id,
+            holding.ticker,
+            holding.model_dump(),
+            updated_at,
+        )
+
+    def list_leader_holdings(self, user_id: str) -> list[StoredLeaderHolding]:
+        rows = self._store.list_leader_holdings(user_id)
+        return [
+            StoredLeaderHolding(
+                ticker=row["ticker"],
+                updated_at=row["updated_at"],
+                payload=LeaderHoldingPayload.model_validate(row["payload"]),
+            )
+            for row in rows
+        ]
+
+    def delete_leader_holding(self, user_id: str, ticker: str) -> bool:
+        return self._store.delete_leader_holding(user_id, ticker)
+
+    def save_catalyst_event(self, user_id: str, payload: dict, updated_at: str) -> None:
+        event = CatalystEventPayload.model_validate(payload)
+        self._store.save_catalyst_event(
+            user_id,
+            event.model_dump(),
+            updated_at,
+        )
+
+    def list_catalyst_events(self, user_id: str) -> list[StoredCatalystEvent]:
+        rows = self._store.list_catalyst_events(user_id)
+        return [
+            StoredCatalystEvent(
+                event_id=row["event_id"],
+                ticker=row["ticker"],
+                updated_at=row["updated_at"],
+                payload=CatalystEventPayload.model_validate(row["payload"]),
+            )
+            for row in rows
+        ]
+
+    def delete_catalyst_event(self, user_id: str, event_id: str) -> bool:
+        return self._store.delete_catalyst_event(user_id, event_id)
+
+    def save_trade(self, user_id: str, payload: dict, updated_at: str) -> str:
+        trade = TradeLifecyclePayload.model_validate(payload)
+        return self._store.save_trade(user_id, trade.model_dump(), updated_at)
+
+    def list_trades(self, user_id: str) -> list[StoredTrade]:
+        rows = self._store.list_trades(user_id)
+        return [
+            StoredTrade(
+                trade_id=row["trade_id"],
+                ticker=row["ticker"],
+                updated_at=row["updated_at"],
+                payload=TradeLifecyclePayload.model_validate(row["payload"]),
+            )
+            for row in rows
+        ]
+
+    def delete_trade(self, user_id: str, trade_id: str) -> bool:
+        return self._store.delete_trade(user_id, trade_id)
+
+    def build_thesis_outcome_summary(self, user_id: str, ticker: str) -> ThesisOutcomeSummary:
+        ticker_upper = ticker.upper()
+        note = self.load_ticker_note(user_id, ticker_upper)
+        journal_entries = [
+            entry
+            for entry in self.list_journal_entries(user_id, limit=200, offset=0)
+            if entry["ticker"] == ticker_upper
+        ]
+
+        latest_entry = journal_entries[0] if journal_entries else None
+        closed_entries = [
+            entry
+            for entry in journal_entries
+            if entry["payload"].get("outcomeTag") in {"win", "loss", "scratch"}
+        ]
+
+        win_count = sum(1 for entry in closed_entries if entry["payload"].get("outcomeTag") == "win")
+        loss_count = sum(1 for entry in closed_entries if entry["payload"].get("outcomeTag") == "loss")
+        scratch_count = sum(1 for entry in closed_entries if entry["payload"].get("outcomeTag") == "scratch")
+
+        return ThesisOutcomeSummary(
+            ticker=ticker_upper,
+            strategy_tag=(note["payload"].get("strategyTag", "") if note else ""),
+            current_thesis=(
+                (note["payload"].get("thesis", "") if note else "")
+                or (latest_entry["payload"].get("thesis", "") if latest_entry else "")
+            ),
+            latest_review=(latest_entry["payload"].get("review", "") if latest_entry else ""),
+            latest_outcome=(latest_entry["payload"].get("outcome", "") if latest_entry else ""),
+            latest_outcome_tag=(latest_entry["payload"].get("outcomeTag", "open") if latest_entry else "open"),
+            latest_updated_at=(latest_entry["updated_at"] if latest_entry else ""),
+            total_closed_entries=len(closed_entries),
+            win_count=win_count,
+            loss_count=loss_count,
+            scratch_count=scratch_count,
+        )
+
     def save_urgency_settings(self, user_id: str, payload: dict, updated_at: str) -> None:
         settings_payload = UrgencySettingsPayload.model_validate(payload)
         self.urgency_settings[user_id] = settings_payload
@@ -1019,6 +1375,178 @@ class DashboardState:
         for metric in digest.metrics:
             lines.append(f"{metric.label}: {metric.value} - {metric.detail}")
         return "\n".join(lines)
+
+    def build_review_metrics(self, user_id: str, triggered_alerts: list[dict]) -> ReviewMetrics:
+        trades = self.list_trades(user_id)
+        closed = [t for t in trades if t.payload.outcomeTag != "open"]
+
+        total_closed = len(closed)
+        win_count = sum(1 for t in closed if t.payload.outcomeTag == "win")
+        loss_count = sum(1 for t in closed if t.payload.outcomeTag == "loss")
+        scratch_count = sum(1 for t in closed if t.payload.outcomeTag == "scratch")
+        overall_win_rate = round(win_count / total_closed, 4) if total_closed > 0 else 0.0
+
+        def _r_multiple(t: StoredTrade) -> float | None:
+            try:
+                entry = float(t.payload.actualEntry) if t.payload.actualEntry else float(t.payload.entryPrice)
+                stop = float(t.payload.stopLoss)
+                exit_price = float(t.payload.actualExit)
+                risk = abs(entry - stop)
+                if risk == 0:
+                    return None
+                return (exit_price - entry) / risk
+            except (ValueError, TypeError):
+                return None
+
+        winner_rs = [r for t in closed if t.payload.outcomeTag == "win" for r in [_r_multiple(t)] if r is not None]
+        loser_rs = [r for t in closed if t.payload.outcomeTag == "loss" for r in [_r_multiple(t)] if r is not None]
+        avg_winner_r = round(sum(winner_rs) / len(winner_rs), 2) if winner_rs else None
+        avg_loser_r = round(sum(loser_rs) / len(loser_rs), 2) if loser_rs else None
+
+        # Setup performance
+        setup_map: dict[str, list[StoredTrade]] = defaultdict(list)
+        for t in closed:
+            setup_map[t.payload.setupType].append(t)
+
+        by_setup: list[SetupStat] = []
+        for setup_type, group in setup_map.items():
+            g_win = sum(1 for t in group if t.payload.outcomeTag == "win")
+            g_loss = sum(1 for t in group if t.payload.outcomeTag == "loss")
+            g_scratch = sum(1 for t in group if t.payload.outcomeTag == "scratch")
+            g_count = len(group)
+            g_wr = round(g_win / g_count, 4) if g_count > 0 else 0.0
+            g_winner_rs = [r for t in group if t.payload.outcomeTag == "win" for r in [_r_multiple(t)] if r is not None]
+            by_setup.append(SetupStat(
+                setup_type=setup_type,
+                count=g_count,
+                win=g_win,
+                loss=g_loss,
+                scratch=g_scratch,
+                win_rate=g_wr,
+                avg_winner_r=round(sum(g_winner_rs) / len(g_winner_rs), 2) if g_winner_rs else None,
+            ))
+        by_setup.sort(key=lambda s: s.count, reverse=True)
+
+        # Session bucketing (EDT = UTC-4)
+        EDT_OFFSET = timedelta(hours=-4)
+        SESSION_WINDOWS = [
+            ("Pre-Market", 4 * 60, 9 * 60 + 30),
+            ("Open Rush", 9 * 60 + 30, 11 * 60),
+            ("Mid-Morning", 11 * 60, 14 * 60),
+            ("Afternoon", 14 * 60, 16 * 60),
+            ("After-Hours", 16 * 60, 20 * 60),
+        ]
+
+        session_map: dict[str, list[StoredTrade]] = defaultdict(list)
+        for t in closed:
+            ts_str = t.payload.stageTimestamps.get("entered")
+            if ts_str:
+                try:
+                    dt_utc = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    dt_edt = dt_utc + EDT_OFFSET
+                    minutes = dt_edt.hour * 60 + dt_edt.minute
+                    label = "Other"
+                    for lbl, start, end in SESSION_WINDOWS:
+                        if start <= minutes < end:
+                            label = lbl
+                            break
+                    session_map[label].append(t)
+                except (ValueError, TypeError):
+                    pass
+
+        by_session: list[SessionBucket] = []
+        session_order = [lbl for lbl, _, _ in SESSION_WINDOWS] + ["Other"]
+        for label in session_order:
+            group = session_map.get(label, [])
+            if not group:
+                continue
+            g_win = sum(1 for t in group if t.payload.outcomeTag == "win")
+            g_loss = sum(1 for t in group if t.payload.outcomeTag == "loss")
+            g_scratch = sum(1 for t in group if t.payload.outcomeTag == "scratch")
+            g_count = len(group)
+            by_session.append(SessionBucket(
+                label=label,
+                count=g_count,
+                win=g_win,
+                loss=g_loss,
+                scratch=g_scratch,
+                win_rate=round(g_win / g_count, 4) if g_count > 0 else 0.0,
+            ))
+
+        # Alert utility
+        alert_condition_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "acted": 0, "dismissed": 0})
+        for alert in triggered_alerts:
+            payload = alert.get("payload") or {}
+            condition = str(payload.get("condition", "unknown"))
+            task_status = str(payload.get("task_status", "pending"))
+            alert_condition_map[condition]["total"] += 1
+            if task_status == "acted":
+                alert_condition_map[condition]["acted"] += 1
+            elif task_status == "dismissed":
+                alert_condition_map[condition]["dismissed"] += 1
+
+        alert_utility: list[AlertUtilityStat] = []
+        for condition, counts in alert_condition_map.items():
+            total = counts["total"]
+            acted = counts["acted"]
+            dismissed = counts["dismissed"]
+            alert_utility.append(AlertUtilityStat(
+                condition=condition,
+                total=total,
+                acted=acted,
+                dismissed=dismissed,
+                act_rate=round(acted / total, 4) if total > 0 else 0.0,
+            ))
+        alert_utility.sort(key=lambda a: a.total, reverse=True)
+        alert_utility = alert_utility[:10]
+
+        total_alerts_fired = sum(a.total for a in alert_utility)
+        total_acted = sum(a.acted for a in alert_utility)
+        alert_acted_rate = round(total_acted / total_alerts_fired, 4) if total_alerts_fired > 0 else 0.0
+
+        # Mistake tags
+        MISTAKE_TAG_LABELS = {
+            "entry_too_early": "Entry Too Early",
+            "held_too_long": "Held Too Long",
+            "ignored_stop": "Ignored Stop",
+            "oversized": "Oversized",
+            "chased": "Chased",
+            "no_catalyst": "No Catalyst",
+            "market_not_aligned": "Market Not Aligned",
+            "fomo": "FOMO",
+            "overtraded": "Overtraded",
+        }
+        tag_counts: dict[str, int] = defaultdict(int)
+        for t in closed:
+            for tag in (t.payload.mistakeTags or []):
+                tag_counts[tag] += 1
+
+        mistake_tags: list[MistakeTagStat] = [
+            MistakeTagStat(
+                tag=tag,
+                label=MISTAKE_TAG_LABELS.get(tag, tag.replace("_", " ").title()),
+                count=count,
+            )
+            for tag, count in sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+        ]
+
+        return ReviewMetrics(
+            user_id=user_id,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            total_closed=total_closed,
+            win_count=win_count,
+            loss_count=loss_count,
+            scratch_count=scratch_count,
+            overall_win_rate=overall_win_rate,
+            avg_winner_r=avg_winner_r,
+            avg_loser_r=avg_loser_r,
+            by_setup=by_setup,
+            by_session=by_session,
+            alert_utility=alert_utility,
+            mistake_tags=mistake_tags,
+            total_alerts_fired=total_alerts_fired,
+            alert_acted_rate=alert_acted_rate,
+        )
 
     def flush_history_to_db(self) -> None:
         """Persist all in-memory price deques to SQLite. Safe to call from any thread."""

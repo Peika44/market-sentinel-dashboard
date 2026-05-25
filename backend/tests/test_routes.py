@@ -8,7 +8,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import register_routes
-from app.domain.models import DashboardSnapshot, EndOfDayDigest, StockCard, TickerValidationResult
+from app.domain.models import (
+    DashboardSnapshot,
+    EndOfDayDigest,
+    FocusQueueEntryPayload,
+    FocusQueueEntryView,
+    LeaderHoldingPayload,
+    StockCard,
+    StoredLeaderHolding,
+    TickerValidationResult,
+)
 
 
 def build_snapshot(
@@ -73,6 +82,25 @@ class FakeDashboardState:
                 "highThreshold": 70.0,
             },
         }
+        self.focus_queue_entry = FocusQueueEntryView(
+            ticker="NFLX",
+            updated_at="",
+            source="generated",
+            payload=FocusQueueEntryPayload(
+                ticker="NFLX",
+                bucket="monitor",
+                whyOnList="Auto-generated queue note.",
+                triggerCondition="Promote it when momentum confirms.",
+                invalidationCondition="Ignore it if the setup fails.",
+            ),
+            generated_payload=FocusQueueEntryPayload(
+                ticker="NFLX",
+                bucket="monitor",
+                whyOnList="Auto-generated queue note.",
+                triggerCondition="Promote it when momentum confirms.",
+                invalidationCondition="Ignore it if the setup fails.",
+            ),
+        )
         self.digest = EndOfDayDigest.model_validate(
             {
                 "user_id": "demo-user",
@@ -84,6 +112,20 @@ class FakeDashboardState:
                     {"label": "Top Urgency", "value": "NVDA, TSLA, AAPL", "detail": "Highest-ranked live names."},
                 ],
             }
+        )
+        self.leader_holding = StoredLeaderHolding(
+            ticker="NFLX",
+            updated_at="2026-05-24T08:30:00Z",
+            payload=LeaderHoldingPayload(
+                ticker="NFLX",
+                positionStatus="holding",
+                conviction="standard",
+                timeHorizon="swing",
+                entryZone="420-428",
+                thesis="Streaming breakout with improving engagement.",
+                invalidatedWhen="Loses prior breakout level with weak tape.",
+                lastUpdatedAt="2026-05-24 08:30 PT",
+            ),
         )
 
     async def validate_ticker(self, ticker: str) -> TickerValidationResult:
@@ -134,6 +176,60 @@ class FakeDashboardState:
             "updated_at": updated_at,
             "payload": payload,
         }
+
+    def load_focus_queue_entry(self, user_id: str, ticker: str):
+        self.calls.append(("load-focus-queue", f"{user_id}:{ticker}"))
+        return self.focus_queue_entry.model_copy(
+            update={"ticker": ticker.upper(), "payload": self.focus_queue_entry.payload.model_copy(update={"ticker": ticker.upper()}), "generated_payload": self.focus_queue_entry.generated_payload.model_copy(update={"ticker": ticker.upper()})}
+        )
+
+    def list_focus_queue_entries(self, user_id: str):
+        self.calls.append(("list-focus-queue", user_id))
+        return [self.focus_queue_entry]
+
+    def save_focus_queue_entry(self, user_id: str, payload: dict, updated_at: str) -> None:
+        self.calls.append(("save-focus-queue", f"{user_id}:{payload['ticker']}"))
+        entry_payload = FocusQueueEntryPayload.model_validate(payload)
+        self.focus_queue_entry = FocusQueueEntryView(
+            ticker=entry_payload.ticker,
+            updated_at=updated_at,
+            source="saved",
+            payload=entry_payload,
+            generated_payload=self.focus_queue_entry.generated_payload.model_copy(
+                update={"ticker": entry_payload.ticker}
+            ),
+        )
+
+    def delete_focus_queue_entry(self, user_id: str, ticker: str) -> bool:
+        self.calls.append(("delete-focus-queue", f"{user_id}:{ticker}"))
+        self.focus_queue_entry = FocusQueueEntryView(
+            ticker=ticker.upper(),
+            updated_at="",
+            source="generated",
+            payload=self.focus_queue_entry.generated_payload.model_copy(
+                update={"ticker": ticker.upper()}
+            ),
+            generated_payload=self.focus_queue_entry.generated_payload.model_copy(
+                update={"ticker": ticker.upper()}
+            ),
+        )
+        return True
+
+    def list_leader_holdings(self, user_id: str):
+        self.calls.append(("list-leader-holdings", user_id))
+        return [self.leader_holding]
+
+    def save_leader_holding(self, user_id: str, payload: dict, updated_at: str) -> None:
+        self.calls.append(("save-leader-holding", f"{user_id}:{payload['ticker']}"))
+        self.leader_holding = StoredLeaderHolding(
+            ticker=str(payload["ticker"]).upper(),
+            updated_at=updated_at,
+            payload=LeaderHoldingPayload.model_validate(payload),
+        )
+
+    def delete_leader_holding(self, user_id: str, ticker: str) -> bool:
+        self.calls.append(("delete-leader-holding", f"{user_id}:{ticker}"))
+        return True
 
     def load_urgency_settings(self, user_id: str):
         self.calls.append(("load-urgency", user_id))
@@ -383,6 +479,176 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(state.calls[0][0], "save-note")
         self.assertEqual(state.note["payload"]["strategyTag"], "Breakout")
+
+    def test_list_focus_queue_entries_returns_generated_payload(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.get("/api/focus-queue/demo-user")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[0]["ticker"], "NFLX")
+        self.assertEqual(payload[0]["payload"]["bucket"], "monitor")
+        self.assertEqual(state.calls, [("list-focus-queue", "demo-user")])
+
+    def test_save_focus_queue_entry_persists_user_override(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.post(
+            "/api/focus-queue",
+            json={
+                "user_id": "demo-user",
+                "entry": {
+                    "ticker": "NFLX",
+                    "bucket": "today_focus",
+                    "whyOnList": "Top breakout candidate for the open.",
+                    "triggerCondition": "Stay above the opening range high with volume.",
+                    "invalidationCondition": "Drop it if it loses VWAP and relative strength fades.",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.calls[0], ("save-focus-queue", "demo-user:NFLX"))
+        self.assertEqual(state.focus_queue_entry.payload.bucket, "today_focus")
+
+    def test_list_leader_holdings_returns_saved_payload(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.get("/api/leader-holdings/demo-user")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[0]["ticker"], "NFLX")
+        self.assertEqual(payload[0]["payload"]["positionStatus"], "holding")
+        self.assertEqual(state.calls, [("list-leader-holdings", "demo-user")])
+
+    def test_save_leader_holding_persists_payload(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.post(
+            "/api/leader-holdings",
+            json={
+                "user_id": "demo-user",
+                "holding": {
+                    "ticker": "NVDA",
+                    "positionStatus": "adding",
+                    "conviction": "heavy",
+                    "timeHorizon": "mid",
+                    "entryZone": "114-118",
+                    "thesis": "AI leader staying in control above key support.",
+                    "invalidatedWhen": "Breaks major support with semis rolling over.",
+                    "lastUpdatedAt": "2026-05-24 09:10 PT",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.calls[0], ("save-leader-holding", "demo-user:NVDA"))
+        self.assertEqual(state.leader_holding.payload.conviction, "heavy")
+
+    def test_delete_leader_holding_removes_payload(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.delete("/api/leader-holdings/demo-user/NFLX")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.calls[0], ("delete-leader-holding", "demo-user:NFLX"))
+
+    def test_restore_generated_focus_queue_entry_removes_saved_override(self) -> None:
+        state = FakeDashboardState(
+            validation=TickerValidationResult(
+                ticker="NFLX",
+                is_valid=True,
+                can_add=True,
+                display_name="Netflix, Inc. Common Stock",
+                feed_status="supported",
+                source="alpaca_assets",
+                message="",
+            ),
+        )
+        state.focus_queue_entry = FocusQueueEntryView(
+            ticker="NFLX",
+            updated_at="2026-05-24T08:00:00Z",
+            source="saved",
+            payload=FocusQueueEntryPayload(
+                ticker="NFLX",
+                bucket="today_focus",
+                whyOnList="User override.",
+                triggerCondition="User trigger.",
+                invalidationCondition="User invalidation.",
+            ),
+            generated_payload=FocusQueueEntryPayload(
+                ticker="NFLX",
+                bucket="monitor",
+                whyOnList="Generated note.",
+                triggerCondition="Generated trigger.",
+                invalidationCondition="Generated invalidation.",
+            ),
+        )
+        client = self.make_client(state)
+
+        response = client.delete("/api/focus-queue/demo-user/NFLX")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.calls[0], ("delete-focus-queue", "demo-user:NFLX"))
+        self.assertEqual(state.focus_queue_entry.source, "generated")
+        self.assertEqual(state.focus_queue_entry.payload.bucket, "monitor")
 
     def test_list_ticker_notes_returns_saved_notes(self) -> None:
         state = FakeDashboardState(

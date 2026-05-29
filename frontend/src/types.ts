@@ -390,3 +390,115 @@ export interface ReviewMetrics {
   total_alerts_fired: number;
   alert_acted_rate: number;
 }
+
+// --- Scanner types ---
+
+export interface ScanSignals {
+  bottom_position: boolean;
+  volume_surge: boolean;
+  rsi_recovery: boolean;
+  ma_cross: boolean;
+  macd_signal: boolean;
+}
+
+export interface ScanResult {
+  rank: number;
+  ticker: string;
+  score: number;
+  signals: ScanSignals;
+  last_close: number;
+  position_in_range: number;
+  rsi_current: number;
+  volume_ratio: number;
+  macd_turning_up: boolean;
+  price_change_pct: number;
+}
+
+export type ScanJobStatus = "idle" | "running" | "completed" | "failed";
+
+export interface ScanJobState {
+  status: ScanJobStatus;
+  progress_scanned: number;
+  progress_total: number;
+  results: ScanResult[];
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+export type ScanPreset = "sp500" | "nasdaq100" | "custom";
+
+// --- Intraday confirmation types ---
+
+export interface IntradaySignals {
+  gap_ok: boolean;
+  breakout_held: boolean;
+  orderflow_ok: boolean;
+  pullback_ok: boolean;
+  spoofing_ok: boolean;
+}
+
+export interface IntradayResult {
+  ticker: string;
+  confirmed: boolean;
+  signals_passed: number;
+  signals: IntradaySignals;
+  open_gap_pct: number;
+  session_high: number;
+  current_price: number;
+  pullback_from_high_pct: number;
+  volume_ratio: number;
+  breakout_hold_minutes: number;
+  entry_price: number | null;
+  stop_price: number | null;
+  target_price: number | null;
+  snapshot_time: string;
+  note: string;
+}
+
+export type IntradayJobStatus = "idle" | "running" | "completed" | "failed";
+
+export interface IntradayJobState {
+  status: IntradayJobStatus;
+  progress_scanned: number;
+  progress_total: number;
+  results: Record<string, IntradayResult>;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+// --- Breakout/Pullback scanner types ---
+
+export interface BreakoutSignals {
+  market_aligned: boolean;
+  trend_up: boolean;
+  volume_surge: boolean;
+  breakout_signal: boolean;
+  pullback_signal: boolean;
+}
+
+export interface BreakoutScanResult {
+  rank: number;
+  ticker: string;
+  score: number;
+  signals: BreakoutSignals;
+  setup_type: "breakout" | "pullback";
+  last_close: number;
+  breakout_level: number;
+  close_strength: number;
+  daily_return_pct: number;
+  volume_ratio: number;
+  price_change_pct: number;
+}
+
+export interface BreakoutScanJobState {
+  status: ScanJobStatus;
+  progress_scanned: number;
+  progress_total: number;
+  results: BreakoutScanResult[];
+  market_filter_active: boolean;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}

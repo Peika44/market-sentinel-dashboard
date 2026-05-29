@@ -4,6 +4,7 @@ import type {
   AlertRuleDraft,
   AlertTaskStatus,
   BoardFilters,
+  BreakoutScanJobState,
   CatalystEventDraft,
   DashboardSnapshot,
   EndOfDayDigest,
@@ -18,6 +19,9 @@ import type {
   MarketOverviewResponse,
   ReviewMetrics,
   SavedFilterPreset,
+  IntradayJobState,
+  ScanJobState,
+  ScanPreset,
   StoredAlertRule,
   StoredCatalystEvent,
   StoredJournalEntry,
@@ -46,6 +50,7 @@ import { UrgencySettingsModal } from "./components/UrgencySettingsModal";
 import { TradeLifecyclePanel } from "./components/TradeLifecyclePanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { FilterStrip } from "./components/FilterStrip";
+import { ScannerPanel } from "./components/ScannerPanel";
 import {
   formatAlertCondition,
   formatChangePct,
@@ -71,6 +76,7 @@ const VIEW_OPTIONS = [
   { id: "catalysts", label: "Catalysts" },
   { id: "trades", label: "Trades" },
   { id: "review", label: "Review" },
+  { id: "scanner", label: "Scanner" },
 ] as const;
 type SessionView = (typeof SESSION_OPTIONS)[number]["id"];
 type MainView = (typeof VIEW_OPTIONS)[number]["id"];
@@ -510,6 +516,12 @@ function App() {
   const [savingCatalystEvent, setSavingCatalystEvent] = useState(false);
   const [catalystView, setCatalystView] = useState<"today" | "this_week" | "by_ticker">("today");
   const [trades, setTrades] = useState<StoredTrade[]>([]);
+  const [scanStatus, setScanStatus] = useState<ScanJobState | null>(null);
+  const [scanPollTimer, setScanPollTimer] = useState<number | null>(null);
+  const [intradayStatus, setIntradayStatus] = useState<IntradayJobState | null>(null);
+  const [intradayPollTimer, setIntradayPollTimer] = useState<number | null>(null);
+  const [breakoutStatus, setBreakoutStatus] = useState<BreakoutScanJobState | null>(null);
+  const [breakoutPollTimer, setBreakoutPollTimer] = useState<number | null>(null);
   const [reviewMetrics, setReviewMetrics] = useState<ReviewMetrics | null>(null);
   const [journalOffset, setJournalOffset] = useState(0);
   const [hasMoreJournal, setHasMoreJournal] = useState(false);
@@ -1169,6 +1181,139 @@ function App() {
     }
   }
 
+  async function pollScanStatus() {
+    try {
+      const response = await fetch(`/api/scanner/status/${DEMO_USER_ID}`);
+      if (!response.ok) return;
+      const payload = (await response.json()) as ScanJobState;
+      setScanStatus(payload);
+      if (payload.status === "running") {
+        const timer = window.setTimeout(() => void pollScanStatus(), 2000);
+        setScanPollTimer(timer);
+      } else {
+        setScanPollTimer(null);
+      }
+    } catch {
+      setScanPollTimer(null);
+    }
+  }
+
+  async function runScan(preset: ScanPreset, minScore: number) {
+    setError(null);
+    try {
+      const response = await fetch("/api/scanner/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, preset, rules: { min_score: minScore } }),
+      });
+      if (!response.ok) throw new Error("Failed to start scan.");
+      const payload = (await response.json()) as { ok: boolean; status: string };
+      if (payload.ok) {
+        if (scanPollTimer != null) window.clearTimeout(scanPollTimer);
+        const timer = window.setTimeout(() => void pollScanStatus(), 500);
+        setScanPollTimer(timer);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start scan.");
+    }
+  }
+
+  async function pollIntradayStatus() {
+    try {
+      const response = await fetch(`/api/intraday/status/${DEMO_USER_ID}`);
+      if (!response.ok) return;
+      const payload = (await response.json()) as IntradayJobState;
+      setIntradayStatus(payload);
+      if (payload.status === "running") {
+        const timer = window.setTimeout(() => void pollIntradayStatus(), 2000);
+        setIntradayPollTimer(timer);
+      } else {
+        setIntradayPollTimer(null);
+      }
+    } catch {
+      setIntradayPollTimer(null);
+    }
+  }
+
+  async function pollBreakoutStatus() {
+    try {
+      const response = await fetch(`/api/scanner/breakout/status/${DEMO_USER_ID}`);
+      const payload = (await response.json()) as BreakoutScanJobState;
+      setBreakoutStatus(payload);
+      if (payload.status === "running") {
+        const timer = window.setTimeout(() => void pollBreakoutStatus(), 2000);
+        setBreakoutPollTimer(timer);
+      } else {
+        setBreakoutPollTimer(null);
+      }
+    } catch {
+      /* network error — retry silently */
+    }
+  }
+
+  async function runBreakoutScan(preset: ScanPreset) {
+    setError(null);
+    try {
+      const response = await fetch("/api/scanner/breakout/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, preset }),
+      });
+      const payload = (await response.json()) as { ok: boolean; status: string };
+      if (payload.ok) {
+        if (breakoutPollTimer != null) window.clearTimeout(breakoutPollTimer);
+        const timer = window.setTimeout(() => void pollBreakoutStatus(), 500);
+        setBreakoutPollTimer(timer);
+      }
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function runIntradayConfirm(tickers: string[]) {
+    setError(null);
+    try {
+      const response = await fetch("/api/intraday/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, tickers }),
+      });
+      if (!response.ok) throw new Error("Failed to start intraday scan.");
+      const payload = (await response.json()) as { ok: boolean; status: string };
+      if (payload.ok) {
+        if (intradayPollTimer != null) window.clearTimeout(intradayPollTimer);
+        const timer = window.setTimeout(() => void pollIntradayStatus(), 500);
+        setIntradayPollTimer(timer);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start intraday scan.");
+    }
+  }
+
+  async function addTickerFromScanner(ticker: string) {
+    setError(null);
+    try {
+      const validation = await fetchTickerValidation(ticker);
+      if (!validation.can_add && !validation.is_valid) {
+        setError(validation.message);
+        return;
+      }
+      const response = await fetch("/api/watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: DEMO_USER_ID, ticker }),
+      });
+      if (!response.ok) {
+        setError(await readErrorMessage(response, "Failed to add ticker to watchlist."));
+        return;
+      }
+      await Promise.all([loadDashboard(), loadFocusQueueEntries()]);
+      setActiveView("board");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add ticker.");
+    }
+  }
+
   function savePreset(name: string, view: "board" | "trades") {
     const preset: SavedFilterPreset = {
       id: crypto.randomUUID(),
@@ -1404,12 +1549,22 @@ function App() {
                 title: "Catalyst and calendar context",
                 body: `${catalystEvents.length} saved catalyst events · ${macroCatalysts.length} macro · ${watchlistCatalysts.length} tied to your watchlist.`,
               }
-          : {
-            title: "Selected ticker workspace",
-            body: activeTrackedTicker
-              ? `${activeTrackedTicker} with ${selectedAlertGroup?.rules.length ?? 0} saved alerts and ${taggedCount} tagged setups across the board.`
-              : "Select a tracked ticker to open notes, alerts, and journal context.",
-          };
+            : activeView === "scanner"
+              ? {
+                  title: "底部筑底扫描器",
+                  body:
+                    scanStatus?.status === "completed"
+                      ? `扫描完成 · ${scanStatus.results.length} 只股票入选 · 共扫描 ${scanStatus.progress_total} 只`
+                      : scanStatus?.status === "running"
+                        ? `扫描中 ${scanStatus.progress_scanned}/${scanStatus.progress_total}…`
+                        : "选择股票池并点击扫描，自动识别底部筑底、主力拉升候选标的。",
+                }
+              : {
+                title: "Selected ticker workspace",
+                body: activeTrackedTicker
+                  ? `${activeTrackedTicker} with ${selectedAlertGroup?.rules.length ?? 0} saved alerts and ${taggedCount} tagged setups across the board.`
+                  : "Select a tracked ticker to open notes, alerts, and journal context.",
+              };
   const sessionTabs = (
     <div className="session-tabs compact-session-tabs">
       {SESSION_OPTIONS.map((option) => (
@@ -2987,6 +3142,32 @@ function App() {
               </div>
             </div>
             <ReviewPanel metrics={reviewMetrics} />
+          </section>
+        ) : null}
+
+        {activeView === "scanner" ? (
+          <section className="tab-panel leader-panel">
+            <div className="tab-panel-header">
+              <div>
+                <p className="eyebrow">底部筑底扫描</p>
+                <h2>Scanner</h2>
+              </div>
+              <div className="workspace-controls">
+                {scanStatus?.status === "completed" ? (
+                  <span className="strategy-count">{scanStatus.results.length} 只入选</span>
+                ) : null}
+              </div>
+            </div>
+            <ScannerPanel
+              scanStatus={scanStatus}
+              intradayStatus={intradayStatus}
+              breakoutStatus={breakoutStatus}
+              onRunScan={(preset, minScore) => void runScan(preset, minScore)}
+              onRunIntraday={(tickers) => void runIntradayConfirm(tickers)}
+              onRunBreakoutScan={(preset) => void runBreakoutScan(preset)}
+              onAddToWatchlist={(ticker) => void addTickerFromScanner(ticker)}
+              onCreateTradePlan={(draft) => setTradePlanDraft(draft)}
+            />
           </section>
         ) : null}
       </main>

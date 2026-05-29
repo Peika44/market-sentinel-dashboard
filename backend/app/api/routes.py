@@ -4,6 +4,13 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
+from app.services.scanner import (
+    BreakoutRunRequest,
+    BreakoutScanJobState,
+    ScanJobState,
+    ScanRunRequest,
+)
+from app.services.intraday import IntradayJobState, IntradayRunRequest
 from app.domain.models import (
     SaveCatalystEventRequest,
     EndOfDayDigest,
@@ -360,6 +367,54 @@ def register_routes(app: FastAPI) -> None:
             "range": range,
             "candles": await app.state.dashboard_state.build_history(ticker, range),
         }
+
+    # --- Scanner endpoints ---
+
+    @app.post("/api/scanner/run")
+    async def run_scanner(body: ScanRunRequest):
+        started = app.state.scanner.start_scan(
+            body.user_id,
+            preset=body.preset,
+            custom_tickers=body.custom_tickers,
+            rules=body.rules,
+        )
+        if not started:
+            return {"ok": False, "status": "already_running"}
+        return {"ok": True, "status": "started"}
+
+    @app.get("/api/scanner/status/{user_id}", response_model=ScanJobState)
+    async def get_scanner_status(user_id: str):
+        return app.state.scanner.get_state(user_id)
+
+    # --- Breakout/Pullback scanner endpoints ---
+
+    @app.post("/api/scanner/breakout/run")
+    async def run_breakout_scanner(body: BreakoutRunRequest):
+        started = app.state.scanner.start_breakout_scan(
+            body.user_id,
+            preset=body.preset,
+            custom_tickers=body.custom_tickers,
+        )
+        if not started:
+            return {"ok": False, "status": "already_running"}
+        return {"ok": True, "status": "started"}
+
+    @app.get("/api/scanner/breakout/status/{user_id}", response_model=BreakoutScanJobState)
+    async def get_breakout_scanner_status(user_id: str):
+        return app.state.scanner.get_breakout_state(user_id)
+
+    # --- Intraday confirmation endpoints ---
+
+    @app.post("/api/intraday/run")
+    async def run_intraday(body: IntradayRunRequest):
+        started = app.state.intraday.start_scan(body.user_id, body.tickers)
+        if not started:
+            return {"ok": False, "status": "already_running"}
+        return {"ok": True, "status": "started"}
+
+    @app.get("/api/intraday/status/{user_id}", response_model=IntradayJobState)
+    async def get_intraday_status(user_id: str):
+        return app.state.intraday.get_state(user_id)
 
     @app.websocket("/ws/dashboard")
     async def dashboard_socket(websocket: WebSocket) -> None:

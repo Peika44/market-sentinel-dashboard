@@ -1,166 +1,277 @@
 # Market Sentinel Dashboard
 
-Independent stock-monitoring dashboard that showcases a deployable event-driven architecture with Kafka-style streaming, WebSocket fan-out, Redis-coordinated symbol subscriptions, and a realtime watchlist UI.
+A full-stack stock-monitoring and trading-workflow tool built as an independent portfolio project. It combines real-time Kafka-backed price streaming, a two-mode market scanner, an intraday orderflow confirmation engine, a structured trade lifecycle, an alert engine, and a suite of research panels — all running locally with a single `docker compose up --build`.
 
-This repository is a clean public showcase of the dashboard experience I independently rebuilt for GitHub. It keeps the engineering signal of a larger realtime trading system while staying small enough to run locally with one command.
+## Features
 
-## Why This Project Exists
+### Watchlist & Live Prices
+- Urgency-ranked watchlist cards with mini sparklines and 52-week range bars
+- Real-time price updates over WebSocket (Kafka → FastAPI → React), no polling
+- Market overview strip for SPY, QQQ, and IWM
+- Per-symbol candlestick/line chart modal with selectable history ranges (5m → 1Y)
+- Dynamic subscribe/unsubscribe from the Alpaca market feed as the watchlist changes
+- Ticker validation against the Alpaca asset API before any state mutation
 
-I wanted a public repo that demonstrates:
+### Two-Mode Market Scanner
+**Bottom-Building scan** — identifies stocks forming a base near 52-week lows before a potential markup phase.
+- Scans S&P 500 or Nasdaq 100 universe (460 / 100 tickers)
+- 100-point scoring across five daily signals:
 
-- Dockerized deployment with `docker compose`
-- Kafka-compatible event streaming via Redpanda
-- FastAPI backend with WebSocket fan-out
-- React dashboard for watchlist monitoring and urgency ranking
+| Signal | Weight | Logic |
+|--------|--------|-------|
+| Bottom position | 25 | Price in bottom 35% of 52-week range |
+| Volume surge | 25 | 5-day avg volume > 25-day avg × 1.3 with healthy price action |
+| RSI recovery | 20 | RSI was ≤35 in past 30 days, now 40–60 and trending up |
+| MA cross | 15 | SMA5 crossing above SMA20, or price reclaiming SMA20 |
+| MACD signal | 15 | Histogram rising 3 consecutive bars, or zero-line cross |
 
-Instead of publishing a private course team repository, I rebuilt the dashboard-facing workflow as an independent portfolio project.
+**Breakout / Pullback scan** — identifies momentum setups in trending stocks, translated directly from a TradingView Pine Script model.
+- Breakout setup: price clears 20-day high with volume ≥ 1.8×, close strength ≥ 72%, daily return 2.5–9%, SMA5 > SMA20
+- Pullback setup: price pulls back ≤ 6% after a prior strong impulse bar (≥ 1.75%), holding above SMA5 × 0.985
+- Market filter: fetches QQQ before the scan and checks `close > SMA10 > SMA30` plus `new 20-day high OR daily return ≥ 1%`
+- Both setups are strict AND conditions — non-qualifying stocks are excluded, not ranked low
+- Score (0–100) ranks quality within qualifying stocks
 
-## What You Can Do
+### Intraday Orderflow Confirmation
+Second-level filter that runs on scan results using yfinance 1-minute data (no Alpaca required).
 
-- monitor a live watchlist sorted by urgency score
-- track market overview cards for `SPY`, `QQQ`, and `IWM`
-- watch realtime price updates arrive through a Kafka-backed event pipeline
-- validate tickers against Alpaca assets before adding them to the watchlist
-- dynamically subscribe and unsubscribe market-feed symbols as the watchlist changes
-- open per-ticker range charts from the dashboard
-- seed a lightweight trade-plan draft directly from a selected stock card
-- add and remove tickers from the watchlist in the running app
+Five intraday signals:
+- **Gap check** — opening gap within a healthy range
+- **Breakout hold** — price stayed above breakout level for ≥ 20 minutes
+- **Orderflow** — detected aggressive buy sequences in bid/ask dynamics
+- **Pullback quality** — intraday pullback ≤ 1.5% from session high
+- **Spoofing filter** — no large bid replenishment patterns that suggest manipulation
+
+When confirmed (≥ 4/5 signals), the trade plan auto-populates with the precise intraday entry, stop, and target instead of daily-close estimates.
+
+### Trade Lifecycle
+Full pipeline from idea to closed review:
+
+`idea` → `planned` → `armed` → `entered` → `exited` → `reviewed`
+
+- Per-stage notes and timestamps
+- Entry, stop, target, actual entry, actual exit
+- Setup type: breakout, pullback, mean-reversion, trend-continuation, event-driven
+- Outcome tagging: open / win / loss / scratch
+- Mistake tag taxonomy for post-trade analysis
+
+### Alert Engine
+- Per-ticker alert rules with condition (price/urgency), threshold, and cooldown
+- Alerts fire into a task inbox with status tracking: pending → snoozed / dismissed / acted
+- Snooze with a time window; acted alerts are linked to a trade record
+- Alert utility metrics: act rate per condition type
+
+### Research Panels
+- **Focus Queue** — classify tickers as `today_focus`, `monitor`, or `ignore` with trigger and invalidation conditions
+- **Leader Holdings** — track conviction levels (light/standard/heavy), position status, and thesis for high-conviction names
+- **Catalyst Calendar** — log earnings, FOMC, CPI, NFP, ex-dividend, splits, options expiry, and custom news tags by date
+- **Ticker Notes** — free-form thesis and strategy tagging per symbol
+
+### Daily Workflow
+- Session switcher: pre-market / live / close
+- End-of-day digest with account metrics summary
+- **Review panel** — aggregate win rate, average winner R / loser R, performance by setup type and session bucket, alert utility breakdown, mistake frequency analysis
+
+---
 
 ## Architecture
 
 ```text
-+---------------------+     Redis active tickers     +---------------------+
-| frontend            |  -------------------------->  | backend             |
-| React dashboard     |                               | FastAPI + SQLite +  |
-| ticker validation   |  <--------------------------  | WebSocket bridge    |
-+----------+----------+        REST + WS              +----------+----------+
-           |                                                         |
-           |                                                         | Kafka topic
-           v                                                         v
-  +-------------------+                                    +-------------------+
-  | Alpaca assets +   |                                    | market-feed       |
-  | market data APIs  | <-------- dynamic subscribe ------ | Alpaca / synthetic|
-  +-------------------+           via Redis target set     | publisher         |
-                                                           +---------+---------+
-                                                                     |
-                                                                     v
-                                                               +-----------+
-                                                               | Redpanda  |
-                                                               +-----------+
+Browser (React + Vite)
+        │  REST + WebSocket
+        ▼
+┌───────────────────────────────────────────┐
+│  backend  (FastAPI + aiokafka)            │
+│  ┌──────────────┐  ┌────────────────────┐ │
+│  │ REST API      │  │ WS hub             │ │
+│  │ 40+ endpoints │  │ fan-out to clients │ │
+│  └──────┬───────┘  └────────┬───────────┘ │
+│         │                   │ consume      │
+│  ┌──────▼───────────────────▼───────────┐ │
+│  │  SQLite (persist)  │  Redis (cache)  │ │
+│  └─────────────────────────────────────┘ │
+│                       │                   │
+│  ScannerService ◄──── │ Alpaca bars API   │
+│  IntradayService ◄─── │ yfinance 1m data  │
+│  AlertEngine           │                   │
+└────────────────────────┼───────────────────┘
+                         │ Kafka consume
+                         ▼
+                  ┌─────────────┐
+                  │  Redpanda   │  (Kafka-compatible broker)
+                  └──────┬──────┘
+                         │ publish
+                         ▼
+              ┌──────────────────────┐
+              │  market-feed service │
+              │  Alpaca WebSocket    │
+              │  or synthetic mode   │
+              └──────────┬───────────┘
+                         │ Redis read
+                         ▼
+                  active ticker set
+                  (updated by backend
+                  as watchlist changes)
 ```
 
-## What This Demonstrates
-
-- Event-driven updates instead of request-only polling
-- Separation between data producer, API layer, and UI
-- Docker-first local deployment
-- Real-time UI state reconciliation from WebSocket events
-- Dynamic market-feed subscription management driven by active watchlist symbols
-- Ticker validation against an external asset API before state mutation
-- A dashboard-to-workflow bridge through trade-plan seed generation
-
-## UI Highlights
-
-- top-level environment badges for market status, WebSocket health, and deployment stack
-- urgency-ranked stock cards with mini history sparklines
-- selected-position panel for focused inspection
-- range-based history modal for per-symbol exploration
-- trade-plan seed workspace with entry, stop, target, and thesis defaults
-- explicit waiting-state treatment for newly added symbols that have not received a first live tick yet
+---
 
 ## Stack
 
-- `frontend`: React + TypeScript + Vite + Nginx
-- `backend`: FastAPI + `aiokafka` + SQLite + Redis cache coordination
-- `event bus`: Redpanda in Kafka API mode
-- `market-feed`: Python publisher that streams Alpaca or synthetic market events
-- `market data`: Alpaca assets API + market data API
-- `cache/coordination`: Redis
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18 + TypeScript + Vite + Nginx |
+| Backend | FastAPI + aiokafka + httpx + Pydantic v2 |
+| Scanner data | Alpaca market data API (daily bars) |
+| Intraday data | yfinance + pandas (1-minute bars) |
+| Persistence | SQLite via `sqlite3` stdlib |
+| Cache / coordination | Redis |
+| Event bus | Redpanda (Kafka API compatible) |
+| Deployment | Docker Compose (5 services) |
+
+---
 
 ## Run Locally
-
-Create a local env file first:
 
 ```bash
 cp .env.example .env
 ```
 
-Then choose one of these modes:
+Edit `.env` and choose a mode:
 
-- `alpaca`
-  - Set `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY`
-  - Keeps ticker validation and live market-feed behavior aligned with the deployed setup
-- `synthetic`
-  - Set `MARKET_DATA_PROVIDER=synthetic`
-  - Lets the stack run without external credentials
+| Variable | Description |
+|----------|-------------|
+| `MARKET_DATA_PROVIDER` | `alpaca` for live data, `synthetic` for offline demo |
+| `APCA_API_KEY_ID` | Alpaca API key (required for scanner and live watchlist) |
+| `APCA_API_SECRET_KEY` | Alpaca API secret |
+| `APCA_DATA_URL` | Alpaca data base URL (default: `https://data.alpaca.markets`) |
+| `ALPACA_FEED` | `iex` (free) or `sip` (paid subscription) |
 
-Start the stack:
+Start everything:
 
 ```bash
 docker compose up --build
 ```
 
-Then open:
-
+Open:
 - Dashboard: `http://localhost:3000`
 - Backend health: `http://localhost:8000/health`
-- Market overview API: `http://localhost:8000/api/market-overview`
+- Market overview: `http://localhost:8000/api/market-overview`
 
-## Local Verification Checklist
+> The scanner endpoints require a valid Alpaca API key. The intraday confirmation engine only needs yfinance and runs without any API credentials.
 
-After the stack comes up, verify these flows in the browser:
+---
 
-1. Confirm the header shows `Market Open/Closed` and `WebSocket live`
-2. Confirm stock cards update over time without refreshing the page
-3. Click `Open Chart` on a ticker and switch between history ranges
-4. Click `Seed Trade Plan` and confirm the draft fields are prefilled
-5. Add a valid ticker and confirm it enters either `live` or `waiting for first market tick` state
-6. Remove that ticker and confirm it disappears from the watchlist without a page refresh
-7. Try an invalid ticker such as `AMAZ` and confirm validation blocks it before mutation
+## Verification Checklist
 
-## Services
+After the stack comes up:
 
-- `frontend`
-  - Serves the dashboard UI on port `3000`
-  - Proxies `/api/*` and `/ws/*` to the backend
-- `backend`
-  - Exposes dashboard APIs on port `8000`
-  - Consumes Kafka events and rebroadcasts them to browser clients
-  - Persists watchlists, drafts, alerts, journal entries, and price history in SQLite
-  - Publishes the active ticker set to Redis for market-feed coordination
-- `market-feed`
-  - Reads the active ticker set from Redis
-  - Subscribes and unsubscribes Alpaca symbols dynamically
-  - Publishes market events into the Kafka topic
-- `redis`
-  - Stores active ticker coordination state and short-lived caches
-- `redpanda`
-  - Single-node Kafka-compatible broker
+1. Header shows `Market Open/Closed` and `WebSocket live`
+2. Watchlist cards update in real time without refreshing
+3. `Open Chart` → switch between history ranges (5m, 1D, 1M, 1Y)
+4. **Scanner tab** → click `S&P 500 日线扫描` → observe progress bar → results table appears
+5. From scanner results → click `日内验证全部` → intraday badges update per row
+6. Switch scanner mode to `突破/回调` → run breakout scan → setup-type badges (突破/回调) visible
+7. `Seed Trade Plan` from a scanner result → entry/stop/target pre-filled
+8. Add an invalid ticker (`AMAZ`) → validation blocks it
+9. **Trades tab** → create a trade, advance stages, add outcome
+10. **Review tab** → win rate and setup breakdown update after trades are closed
+
+---
 
 ## API Surface
 
-- `GET /api/dashboard/{user_id}`
-- `GET /api/tickers/validate?ticker=NVDA`
-- `POST /api/watchlist`
-- `DELETE /api/watchlist/{user_id}/{ticker}`
-- `GET /api/market-overview`
-- `GET /api/stocks/{ticker}/history?range=1M`
-- `WS /ws/dashboard`
+### Watchlist & Dashboard
+```
+GET  /api/dashboard/{user_id}
+GET  /api/market-overview
+GET  /api/tickers/validate?ticker=NVDA
+POST /api/watchlist
+DELETE /api/watchlist/{user_id}/{ticker}
+GET  /api/stocks/{ticker}/history?range=1M
+```
 
-## Design Notes
+### Scanner
+```
+POST /api/scanner/run
+GET  /api/scanner/status/{user_id}
+POST /api/scanner/breakout/run
+GET  /api/scanner/breakout/status/{user_id}
+POST /api/intraday/run
+GET  /api/intraday/status/{user_id}
+```
 
-- The default checked-in env shape is Alpaca-backed, but the codebase can still run in `synthetic` mode for offline demos.
-- Watchlists, drafts, alerts, journal entries, and persisted history are stored in SQLite instead of memory-only state.
-- Redpanda is used here for Kafka-compatible local development without introducing a heavier cluster setup.
-- Redis coordinates the currently active ticker universe between backend and market-feed.
-- Newly added symbols can appear in a `waiting` state until the first usable market tick arrives.
-- Feed coverage depends on the configured Alpaca feed. A valid asset may not immediately produce a first tick on every feed.
-- The chart view and trade-plan seed flow are intentionally scoped to showcase product thinking without expanding into a full brokerage or execution platform.
+### Trade Workflow
+```
+GET    /api/trade-plan-drafts/{user_id}
+PUT    /api/trade-plan-drafts/{user_id}/{ticker}
+DELETE /api/trade-plan-drafts/{user_id}/{ticker}
+GET    /api/trades/{user_id}
+PUT    /api/trades/{user_id}
+DELETE /api/trades/{user_id}/{trade_id}
+GET    /api/review-metrics/{user_id}
+GET    /api/end-of-day-digest/{user_id}
+GET    /api/thesis-outcomes/{user_id}
+```
 
-## Next Improvements
+### Alerts
+```
+GET    /api/alert-rules/{user_id}
+PUT    /api/alert-rules/{user_id}
+DELETE /api/alert-rules/{user_id}/{rule_id}
+GET    /api/triggered-alerts/{user_id}
+POST   /api/triggered-alerts/{user_id}/update-task
+```
 
-- improve first-tick bootstrap for symbols that validate successfully but have sparse current-feed coverage
-- add tests around ticker validation, waiting-state transitions, and dynamic subscribe/unsubscribe behavior
-- add auth and user-specific websocket channels
-- expand the trade-plan workflow into stored drafts and review states
-- split event domains into market, sentiment, and alert topics
+### Research Panels
+```
+GET /PUT /api/journal/{user_id}
+GET /PUT /api/ticker-notes/{user_id}
+GET /PUT /DELETE /api/focus-queue/{user_id}
+GET /PUT /DELETE /api/leader-holdings/{user_id}
+GET /PUT /DELETE /api/catalyst-events/{user_id}
+GET /PUT /api/urgency-settings/{user_id}
+```
+
+### WebSocket
+```
+WS /ws/dashboard
+```
+
+---
+
+## Engineering Decisions
+
+**Scanner runs in background tasks, not threads.** `asyncio.create_task` launches the scan worker; `asyncio.Semaphore(15)` limits concurrent Alpaca requests. The frontend polls every 2 seconds until `status == "completed"`.
+
+**Intraday confirmation is isolated from the daily scanner.** It runs on demand after the daily scan completes, using yfinance 1-minute data with no Alpaca dependency. All pandas/yfinance calls are wrapped in `loop.run_in_executor(None, ...)` to avoid blocking the event loop.
+
+**Breakout scanner translates Pine Script conditions exactly.** Both breakout and pullback setups use the same AND-gate logic as the TradingView model rather than a fuzzy score. Non-qualifying stocks return `None` rather than a low score, so the result set only contains actual signal candidates.
+
+**SQLite over PostgreSQL.** All persistent state (watchlists, trade plans, alert rules, journal entries, price history) lives in a single SQLite file. This keeps the stack self-contained for local development and portfolio demos without a separate database service.
+
+**Redis as a coordination channel, not a message bus.** The backend publishes the active ticker set to Redis as a sorted set; the market-feed service reads it to manage Alpaca WebSocket subscriptions. Redpanda carries the actual event messages.
+
+**No auth in the current build.** All endpoints use a hardcoded `demo-user` ID. Adding per-user authentication and WebSocket channel isolation is the intended next layer.
+
+---
+
+## Services
+
+| Service | Port | Role |
+|---------|------|------|
+| `frontend` | 3000 | React SPA served by Nginx; proxies `/api/*` and `/ws/*` to backend |
+| `backend` | 8000 | FastAPI: REST APIs, WebSocket hub, scanner engine, alert engine |
+| `market-feed` | — | Alpaca/synthetic market event publisher → Redpanda |
+| `redis` | 6379 | Active ticker coordination; short-lived response cache |
+| `redpanda` | 9092 | Kafka-compatible single-node broker |
+
+---
+
+## Next Steps
+
+- Integration tests for scanner scoring, ticker validation, and WebSocket state reconciliation
+- Auth layer with per-user WebSocket channels
+- Notification delivery for triggered alerts (email, Telegram, Discord)
+- Backtest panel linking scanner signals to historical trade outcomes
+- Demo mode with canned scan results so the scanner works without Alpaca credentials

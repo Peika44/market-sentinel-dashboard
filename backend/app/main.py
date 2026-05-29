@@ -12,6 +12,8 @@ from app.infra.notifier import Notifier
 from app.infra.storage import SQLiteStore
 from app.services.alerts import AlertEngine
 from app.services.dashboard import DashboardState
+from app.services.intraday import IntradayService
+from app.services.scanner import ScannerService
 from app.services.streaming import consume_market_events
 from app.ws import WebSocketHub
 
@@ -40,6 +42,8 @@ async def lifespan(app: FastAPI):
         app.state.notifier,
         app.state.dashboard_state,
     )
+    app.state.scanner = ScannerService()
+    app.state.intraday = IntradayService()
     app.state.websocket_hub = WebSocketHub()
     consumer_task = asyncio.create_task(consume_market_events(app))
     flush_task = asyncio.create_task(

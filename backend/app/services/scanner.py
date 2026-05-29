@@ -562,7 +562,10 @@ class ScannerService:
             started_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        asyncio.create_task(self._scan_worker(user_id, tickers, rules))
+        if settings.demo_mode:
+            asyncio.create_task(self._demo_bottom_worker(user_id, len(tickers)))
+        else:
+            asyncio.create_task(self._scan_worker(user_id, tickers, rules))
         return True
 
     async def _scan_worker(
@@ -700,7 +703,10 @@ class ScannerService:
             progress_total=len(tickers),
             started_at=datetime.now(timezone.utc).isoformat(),
         )
-        asyncio.create_task(self._breakout_worker(user_id, tickers))
+        if settings.demo_mode:
+            asyncio.create_task(self._demo_breakout_worker(user_id, len(tickers)))
+        else:
+            asyncio.create_task(self._breakout_worker(user_id, tickers))
         return True
 
     async def _fetch_market_trend(self) -> bool:
@@ -828,3 +834,90 @@ class ScannerService:
             self._breakout_states[user_id] = bstate.model_copy(
                 update={"status": "failed", "error": str(exc)}
             )
+
+    # -----------------------------------------------------------------------
+    # Demo-mode workers (DEMO_MODE=true, no Alpaca API calls)
+    # -----------------------------------------------------------------------
+
+    async def _demo_bottom_worker(self, user_id: str, total: int) -> None:
+        """Simulate a bottom-building scan with pre-canned results (~5.4 s)."""
+        from app.services.demo_data import DEMO_BOTTOM_ROWS  # local import avoids circular
+
+        steps = 18
+        for i in range(1, steps + 1):
+            await asyncio.sleep(0.3)
+            simulated = int(total * i / steps)
+            state = self._states.get(user_id)
+            if state:
+                self._states[user_id] = state.model_copy(
+                    update={"progress_scanned": simulated}
+                )
+
+        results = [
+            ScanResult(
+                rank=row["rank"],
+                ticker=row["ticker"],
+                score=row["score"],
+                signals=row["signals"],
+                last_close=row["last_close"],
+                position_in_range=row["position_in_range"],
+                rsi_current=row["rsi_current"],
+                volume_ratio=row["volume_ratio"],
+                macd_turning_up=row["macd_turning_up"],
+                price_change_pct=row["price_change_pct"],
+            )
+            for row in DEMO_BOTTOM_ROWS
+        ]
+
+        self._states[user_id] = ScanJobState(
+            status="completed",
+            progress_scanned=total,
+            progress_total=total,
+            results=results,
+            started_at=self._states[user_id].started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        logger.info("Demo bottom scan completed user=%s", user_id)
+
+    async def _demo_breakout_worker(self, user_id: str, total: int) -> None:
+        """Simulate a breakout/pullback scan with pre-canned results (~5.4 s)."""
+        from app.services.demo_data import DEMO_BREAKOUT_ROWS  # local import avoids circular
+
+        steps = 18
+        for i in range(1, steps + 1):
+            await asyncio.sleep(0.3)
+            simulated = int(total * i / steps)
+            state = self._breakout_states.get(user_id)
+            if state:
+                self._breakout_states[user_id] = state.model_copy(
+                    update={"progress_scanned": simulated}
+                )
+
+        results = [
+            BreakoutScanResult(
+                rank=row["rank"],
+                ticker=row["ticker"],
+                score=row["score"],
+                signals=BreakoutSignals(**row["signals"]),
+                setup_type=row["setup_type"],
+                last_close=row["last_close"],
+                breakout_level=row["breakout_level"],
+                close_strength=row["close_strength"],
+                daily_return_pct=row["daily_return_pct"],
+                volume_ratio=row["volume_ratio"],
+                price_change_pct=row["price_change_pct"],
+            )
+            for row in DEMO_BREAKOUT_ROWS
+        ]
+
+        started = self._breakout_states[user_id].started_at
+        self._breakout_states[user_id] = BreakoutScanJobState(
+            status="completed",
+            progress_scanned=total,
+            progress_total=total,
+            results=results,
+            market_filter_active=True,
+            started_at=started,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        logger.info("Demo breakout scan completed user=%s", user_id)

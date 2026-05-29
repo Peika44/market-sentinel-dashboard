@@ -26,6 +26,8 @@ import pandas as pd
 import yfinance as yf
 from pydantic import BaseModel
 
+from app.core.config import settings
+
 logger = logging.getLogger("market_sentinel_intraday")
 
 # ---------------------------------------------------------------------------
@@ -343,7 +345,10 @@ class IntradayService:
             progress_total=len(tickers),
             started_at=datetime.now(timezone.utc).isoformat(),
         )
-        asyncio.create_task(self._worker(user_id, tickers))
+        if settings.demo_mode:
+            asyncio.create_task(self._demo_worker(user_id, tickers))
+        else:
+            asyncio.create_task(self._worker(user_id, tickers))
         return True
 
     async def _worker(self, user_id: str, tickers: list[str]) -> None:
@@ -401,3 +406,54 @@ class IntradayService:
             self._states[user_id] = state.model_copy(
                 update={"status": "failed", "error": str(exc)}
             )
+
+    async def _demo_worker(self, user_id: str, tickers: list[str]) -> None:
+        """Simulate intraday confirmation with pre-canned results (0.4 s per ticker)."""
+        from app.services.demo_data import DEMO_INTRADAY_ROWS  # local import avoids circular
+
+        results: dict[str, IntradayResult] = {}
+        total = len(tickers)
+
+        for i, ticker in enumerate(tickers, 1):
+            await asyncio.sleep(0.4)
+            row = DEMO_INTRADAY_ROWS.get(ticker)
+            if row:
+                results[ticker] = IntradayResult(
+                    ticker=row["ticker"],
+                    confirmed=row["confirmed"],
+                    signals_passed=row["signals_passed"],
+                    signals=IntradaySignals(**row["signals"]),
+                    open_gap_pct=row["open_gap_pct"],
+                    session_high=row["session_high"],
+                    current_price=row["current_price"],
+                    pullback_from_high_pct=row["pullback_from_high_pct"],
+                    volume_ratio=row["volume_ratio"],
+                    breakout_hold_minutes=row["breakout_hold_minutes"],
+                    entry_price=row["entry_price"],
+                    stop_price=row["stop_price"],
+                    target_price=row["target_price"],
+                    snapshot_time=row["snapshot_time"],
+                    note=row["note"],
+                )
+            else:
+                results[ticker] = _failed_result(ticker, "demo: no intraday data for this ticker")
+
+            state = self._states.get(user_id)
+            if state:
+                self._states[user_id] = state.model_copy(
+                    update={"progress_scanned": i, "results": dict(results)}
+                )
+
+        self._states[user_id] = IntradayJobState(
+            status="completed",
+            progress_scanned=total,
+            progress_total=total,
+            results=results,
+            started_at=self._states[user_id].started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        confirmed = sum(1 for r in results.values() if r.confirmed)
+        logger.info(
+            "Demo intraday scan completed user=%s tickers=%d confirmed=%d",
+            user_id, len(tickers), confirmed,
+        )

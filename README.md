@@ -139,12 +139,24 @@ cp .env.example .env
 
 Edit `.env` and choose a mode:
 
+### Demo mode (no credentials required)
+
+Set `DEMO_MODE=true` to run the complete dashboard with zero API credentials. Both scanners and the intraday confirmation engine return pre-canned results with a realistic animated progress bar so every UI flow is fully exercisable offline.
+
+```env
+DEMO_MODE=true
+MARKET_DATA_PROVIDER=synthetic
+```
+
+### Live mode (Alpaca credentials)
+
 | Variable | Description |
 |----------|-------------|
-| `MARKET_DATA_PROVIDER` | `alpaca` for live data, `synthetic` for offline demo |
+| `DEMO_MODE` | `false` (default) — use real Alpaca data |
+| `MARKET_DATA_PROVIDER` | `alpaca` for live streaming, `synthetic` for offline prices |
 | `APCA_API_KEY_ID` | Alpaca API key (required for scanner and live watchlist) |
 | `APCA_API_SECRET_KEY` | Alpaca API secret |
-| `APCA_DATA_URL` | Alpaca data base URL (default: `https://data.alpaca.markets`) |
+| `ALPACA_DATA_URL` | Alpaca data base URL (default: `https://data.alpaca.markets`) |
 | `ALPACA_FEED` | `iex` (free) or `sip` (paid subscription) |
 
 Start everything:
@@ -158,7 +170,7 @@ Open:
 - Backend health: `http://localhost:8000/health`
 - Market overview: `http://localhost:8000/api/market-overview`
 
-> The scanner endpoints require a valid Alpaca API key. The intraday confirmation engine only needs yfinance and runs without any API credentials.
+> In live mode the daily scanner requires a valid Alpaca API key. The intraday confirmation engine uses yfinance and works without any API credentials.
 
 ---
 
@@ -274,4 +286,3 @@ WS /ws/dashboard
 - Auth layer with per-user WebSocket channels
 - Notification delivery for triggered alerts (email, Telegram, Discord)
 - Backtest panel linking scanner signals to historical trade outcomes
-- Demo mode with canned scan results so the scanner works without Alpaca credentials

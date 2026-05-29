@@ -175,6 +175,22 @@ def register_routes(app: FastAPI) -> None:
         )
         return {"ok": updated, "alert_id": alert_id}
 
+    @app.post("/api/notifications/test-discord")
+    async def test_discord_notification():
+        """Send a test embed to the configured Discord webhook."""
+        if not app.state.settings.discord_webhook_url:
+            return {"ok": False, "message": "DISCORD_WEBHOOK_URL is not configured"}
+        await app.state.notifier.send(
+            "discord",
+            "Market Sentinel — Test Notification",
+            "Webhook is working. You will receive alerts here when conditions are triggered.",
+            condition="target_hit",
+            snapshot_price=100.0,
+            snapshot_change_pct=2.50,
+            threshold="100.00",
+        )
+        return {"ok": True, "message": "Test notification sent"}
+
     @app.get("/api/journal-entries/{user_id}", response_model=list[StoredJournalEntry])
     async def list_journal_entries(user_id: str, limit: int = 12, offset: int = 0):
         rows = app.state.dashboard_state.list_journal_entries(user_id, limit=limit, offset=offset)

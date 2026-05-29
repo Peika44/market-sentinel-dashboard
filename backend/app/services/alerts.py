@@ -27,7 +27,7 @@ class AlertEngine:
         self._notifier = notifier
         self._state = state
 
-    def evaluate_market_event(self, event: MarketEvent) -> list[dict]:
+    async def evaluate_market_event(self, event: MarketEvent) -> list[dict]:
         rules = self._store.list_all_alert_rules()
         triggered: list[dict] = []
         previous_history = self._state.recent_history_before_event(event.ticker, limit=24)
@@ -156,10 +156,14 @@ class AlertEngine:
                 {"triggered_at": triggered_at},
                 ttl_seconds=max(60, int(cooldown_minutes * 60)),
             )
-            self._notifier.send(
+            await self._notifier.send(
                 payload.channel,
-                f"Alert Triggered: {event.ticker.upper()}",
+                f"Alert: {event.ticker.upper()}",
                 message,
+                condition=payload.condition,
+                snapshot_price=event.current_price,
+                snapshot_change_pct=event.change_pct,
+                threshold=payload.threshold,
             )
             logger.info("alert TRIGGERED %s %s user=%s", event.ticker.upper(), payload.condition, user_id)
             triggered.append(

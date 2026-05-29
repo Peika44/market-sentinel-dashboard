@@ -29,7 +29,7 @@ async def consume_market_events(app) -> None:
 
             async for message in consumer:
                 event = MarketEvent.model_validate(message.value)
-                app.state.alert_engine.evaluate_market_event(event)
+                await app.state.alert_engine.evaluate_market_event(event)
                 app.state.dashboard_state.apply_event(event)
                 await app.state.websocket_hub.broadcast(event)
         except asyncio.CancelledError:

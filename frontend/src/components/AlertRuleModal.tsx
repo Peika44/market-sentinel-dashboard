@@ -76,7 +76,13 @@ export function AlertRuleModal({
           </label>
           <label>
             Channel
-            <input value={draft.channel} onChange={field("channel")} />
+            <select
+              value={draft.channel}
+              onChange={(e) => onChange({ ...draft, channel: e.target.value })}
+            >
+              <option value="log">Log only</option>
+              <option value="discord">Discord</option>
+            </select>
           </label>
         </div>
 
